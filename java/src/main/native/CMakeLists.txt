@@ -17,7 +17,9 @@ cmake_minimum_required(VERSION 3.12 FATAL_ERROR)
 
 project(CUDF_JNI VERSION 0.7.0 LANGUAGES C CXX CUDA)
 
-set(CUDF_CPP_BUILD_DIR "${PROJECT_SOURCE_DIR}/../../../../cpp/build")
+if (NOT CUDF_CPP_BUILD_DIR)
+  set(CUDF_CPP_BUILD_DIR "${PROJECT_SOURCE_DIR}/../../../../cpp/build")
+endif()
 
 ###################################################################################################
 # - build type ------------------------------------------------------------------------------------

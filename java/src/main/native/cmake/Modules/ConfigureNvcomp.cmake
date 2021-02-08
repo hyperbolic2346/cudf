@@ -17,6 +17,8 @@
 set(NVCOMP_ROOT "${CMAKE_BINARY_DIR}/nvcomp")
 
 set(NVCOMP_CMAKE_ARGS "-DUSE_RMM=ON -DCUB_DIR=${CUB_INCLUDE}")
+set(NVCOMP_CMAKE_ARGS "${NVCOMP_CMAKE_ARGS} -DCUDAToolkit_ROOT=${CUDAToolkit_ROOT}")
+set(NVCOMP_CMAKE_ARGS "${NVCOMP_CMAKE_ARGS} -DCUDAToolkit_INCLUDE_DIR=${CUDAToolkit_INCLUDE_DIR}")
 
 configure_file("${CMAKE_SOURCE_DIR}/cmake/Templates/Nvcomp.CMakeLists.txt.cmake"
                "${NVCOMP_ROOT}/CMakeLists.txt")

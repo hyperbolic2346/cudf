@@ -23,6 +23,7 @@
 
 #include <cudf/null_mask.hpp>
 #include <cudf/strings/strings_column_view.hpp>
+#include <cudf/utilities/type_dispatcher.hpp>
 
 #include <rmm/cuda_stream_view.hpp>
 #include <rmm/device_buffer.hpp>
@@ -999,8 +1000,14 @@ writer::impl::impl(std::unique_ptr<data_sink> sink,
   if (options.get_metadata() != nullptr) {
     user_metadata_with_nullability = *options.get_metadata();
     user_metadata                  = &user_metadata_with_nullability;
+    printf("got metadata\n Nullability:");
+    for (auto i : user_metadata_with_nullability.column_nullable) { printf("%s", i ? " 1" : " 0"); }
+    printf("\n");
+  } else {
+    printf("got no metadata\n");
   }
 
+  printf("compression type is %d\n", (int)compression_kind_);
   init_state();
 }
 
@@ -1012,12 +1019,103 @@ void writer::impl::init_state()
   out_sink_->host_write(MAGIC, std::strlen(MAGIC));
 }
 
+//#define write_debug
+
+#ifdef write_debug
+struct col_header {
+  type_id tid;
+  size_type size;
+  size_type num_child_columns;  // immediately following this column
+  size_t num_bytes;             // bytes in the column
+  size_type null_bytes;         // null mask bytes in column
+};
+
+void write_column(cudf::column_view const &col, FILE *fp)
+{
+  printf("column type is %d\n", (int)col.type().id());
+  void *src = (void *)col.data<uint8_t>();
+
+  const size_type col_bytes = src == nullptr ? 0 : cudf::size_of(col.type()) * col.size();
+
+  col_header hdr;
+  hdr.tid               = col.type().id();
+  hdr.size              = col.size();
+  hdr.num_child_columns = col.num_children();
+  hdr.num_bytes         = col_bytes;
+  hdr.null_bytes =
+    col.nullable() && col.null_mask() != nullptr ? num_bitmask_words(col.size()) * 4 : 0;
+
+  fwrite(&hdr, sizeof(hdr), 1, fp);
+
+  if (src != nullptr || col.type().id() != type_id::STRING) {
+    printf("built host vector of %d bytes\n", col_bytes);
+    thrust::host_vector<uint8_t> h_data(col_bytes);
+    void *dst = h_data.data();
+    printf("copying %d bytes from %p to %p\n", col_bytes, src, dst);
+    CUDA_TRY(cudaMemcpy(dst, src, col_bytes, cudaMemcpyDeviceToHost));
+
+    fwrite(h_data.data(), col_bytes, 1, fp);
+  }
+
+  void *nulls = (void *)col.null_mask();
+  if (nulls != nullptr) {
+    thrust::host_vector<uint8_t> h_null_data(hdr.null_bytes);
+    void *null_dst = h_null_data.data();
+    printf("copying %d bytes from %p to %p for nulls\n", hdr.null_bytes, nulls, null_dst);
+    CUDA_TRY(cudaMemcpy(null_dst, nulls, hdr.null_bytes, cudaMemcpyDeviceToHost));
+
+    fwrite(h_null_data.data(), hdr.null_bytes, 1, fp);
+  }
+
+  printf("writing %d children\n", (int)std::distance(col.child_begin(), col.child_end()));
+  for (auto i = col.child_begin(); i != col.child_end(); ++i) { write_column(*i, fp); }
+}
+#endif
+
 void writer::impl::write(table_view const &table)
 {
   CUDF_EXPECTS(not closed, "Data has already been flushed to out and closed");
   size_type num_columns = table.num_columns();
   size_type num_rows    = 0;
 
+#ifdef write_debug
+  char fn[512];
+  sprintf(fn, "/tmp/%d.tbl", table.num_rows());
+  FILE *fp = fopen(fn, "wb");
+  printf("Metadata:\n");
+  if (user_metadata_with_nullability.column_nullable.size() > 0) {
+    printf(" - nullability:\n");
+    for (auto i : user_metadata_with_nullability.column_nullable) { printf("%d, ", i ? 1 : 0); }
+    printf("\n");
+  } else {
+    printf(" - no nullabililty data\n");
+  }
+  if (user_metadata_with_nullability.column_names.size() > 0) {
+    printf(" - column names:\n");
+    for (auto i : user_metadata_with_nullability.column_names) { printf("  - %s\n", i.c_str()); }
+  } else {
+    printf(" - no column names\n");
+  }
+  if (user_metadata_with_nullability.user_data.size() > 0) {
+    printf(" - user data:\n");
+    for (auto i : user_metadata_with_nullability.user_data) {
+      printf("  - %s: %s\n", i.first.c_str(), i.second.c_str());
+    }
+  } else {
+    printf(" - no user data\n");
+  }
+  if (user_metadata_with_nullability.schema_info.size() > 0) {
+    printf(" - schema info\n");
+    for (auto i : user_metadata_with_nullability.schema_info) {
+      printf("  - %s:\n", i.name.c_str());
+      for (auto c : i.children) { printf("   - %s\n", c.name.c_str()); }
+    }
+  } else {
+    printf(" - no schema info\n");
+  }
+  printf("writing table with %d columns\n", table.num_columns());
+  for (auto col : table) { write_column(col, fp); }
+#endif
   // Mapping of string columns for quick look-up
   std::vector<int> str_col_ids;
 

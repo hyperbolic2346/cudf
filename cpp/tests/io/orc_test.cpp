@@ -629,6 +629,111 @@ TEST_F(OrcWriterTest, Slice)
 
   CUDF_TEST_EXPECT_TABLES_EQUIVALENT(read_table.tbl->view(), tbl);
 }
+struct col_header {
+  cudf::type_id tid;
+  cudf::size_type size;
+  cudf::size_type num_child_columns;  // immediately following this column
+  size_t num_bytes;                   // bytes in the column
+  cudf::size_type null_bytes;         // null mask bytes in column
+};
+
+std::unique_ptr<cudf::column> read_column(FILE* input, int level = 0)
+{
+  col_header hdr;
+  if (fread(&hdr, 1, sizeof(col_header), input) != sizeof(col_header)) {
+    printf("error reading column!\n");
+    return nullptr;
+  }
+
+  // if this is a string column, we don't alloc data and the data is nullptr
+  // otherwise, allocate data and read the data for this column
+  std::vector<uint8_t> data;
+  if (hdr.tid != cudf::type_id::STRING) {
+    printf("%sreading %zu bytes of data, which translates to %d rows of data\n",
+           level == 0 ? "" : " ",
+           hdr.num_bytes,
+           hdr.size);
+    data.resize(hdr.num_bytes);
+    if (fread(data.data(), 1, hdr.num_bytes, input) != (size_t)hdr.num_bytes) {
+      printf("Unable to read data for column!\n");
+      return nullptr;
+    }
+  }
+
+  std::vector<uint8_t> nulls;
+  if (hdr.null_bytes > 0) {
+    printf("%sReading %d null bytes\n", level == 0 ? "" : " ", hdr.null_bytes);
+    nulls.resize(hdr.null_bytes);
+    if (fread(nulls.data(), 1, hdr.null_bytes, input) != (size_t)hdr.null_bytes) {
+      printf("Unable to read null data!\n");
+      return nullptr;
+    }
+  }
+
+  printf("%sconstructing children!\n", level == 0 ? "" : " ");
+
+  // we need any child columns created before we create our column, so build those now
+  std::vector<std::unique_ptr<cudf::column>> children;
+  if (hdr.num_child_columns > 0) {
+    printf("%sreading %d children\n", level == 0 ? "" : " ", hdr.num_child_columns);
+    for (int i = 0; i < hdr.num_child_columns; ++i) {
+      children.push_back(read_column(input, level + 1));
+    }
+  }
+  auto col_data = hdr.tid == cudf::type_id::STRING ? rmm::device_buffer(0)
+                                                   : rmm::device_buffer(data.data(), data.size());
+  auto null_data = rmm::device_buffer(nulls.data(), nulls.size());
+  printf("%sconstructing column of type %d with %d rows data %p and nulls %p!\n",
+         level == 0 ? "" : " ",
+         (int)hdr.tid,
+         hdr.size,
+         col_data.data(),
+         null_data.data());
+  cudf::column col(cudf::data_type(hdr.tid),
+                   hdr.size,
+                   col_data,
+                   null_data,
+                   cudf::UNKNOWN_NULL_COUNT,
+                   std::move(children));
+  printf("%screated column with %d %s rows\n",
+         level == 0 ? "" : " ",
+         col.size(),
+         col.nullable() ? "nullable" : "non-nullable");
+  //  cudf::test::print(col);
+  return std::make_unique<cudf::column>(col);
+}
+
+TEST_F(OrcChunkedWriterTest, BrokenWrite)
+{
+  FILE* input = fopen("/tmp/39852.tbl", "rb");
+  if (!input) {
+    printf("Unable to open file /tmp/39852.tbl!\n");
+    return;
+  }
+  std::vector<std::unique_ptr<cudf::column>> tbl_cols;
+  while (1) {
+    auto ret = read_column(input);
+    if (ret == nullptr) {
+      // done!
+      break;
+    }
+    tbl_cols.push_back(std::move(ret));
+  }
+
+  // now build the table and write it.
+  cudf::io::table_metadata_with_nullability md;
+  md.column_names = {"lx_id", "lx_name", "lx_search", "ffc_id", "ffc_name", "sfc_id", "sfc_name"};
+  md.column_nullable = {true, true, true, false, false, false, false};
+  cudf::table tbl(std::move(tbl_cols));
+  auto filepath = std::string("/tmp/39852.orc");
+  cudf_io::chunked_orc_writer_options options =
+    cudf_io::chunked_orc_writer_options::builder(cudf_io::sink_info{filepath})
+      .compression(cudf::io::compression_type::SNAPPY)
+      .metadata(&md);
+  auto opts = cudf_io::orc_chunked_writer(options);
+  printf("writing table\n");
+  opts.write(tbl);
+}
 
 TEST_F(OrcChunkedWriterTest, SingleTable)
 {

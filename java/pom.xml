@@ -150,6 +150,9 @@
         <skipNativeCopy>false</skipNativeCopy>
         <cxx.flags/>
         <CMAKE_EXPORT_COMPILE_COMMANDS>OFF</CMAKE_EXPORT_COMPILE_COMMANDS>
+	<CUDF_CPP_BUILD_DIR>${basedir}/../cpp/build</CUDF_CPP_BUILD_DIR>
+	<CUDAToolkit_ROOT>/usr/local/cuda</CUDAToolkit_ROOT>
+	<CUDAToolkit_INCLUDE_DIR>/usr/local/cuda/include</CUDAToolkit_INCLUDE_DIR>
         <CUDA_STATIC_RUNTIME>OFF</CUDA_STATIC_RUNTIME>
         <PER_THREAD_DEFAULT_STREAM>OFF</PER_THREAD_DEFAULT_STREAM>
         <RMM_LOGGING_LEVEL>INFO</RMM_LOGGING_LEVEL>
@@ -382,6 +385,8 @@
                                     <arg value="-DUSE_GDS=${USE_GDS}" />
                                     <arg value="-DCMAKE_CXX_FLAGS=${cxx.flags}"/>
                                     <arg value="-DCMAKE_EXPORT_COMPILE_COMMANDS=${CMAKE_EXPORT_COMPILE_COMMANDS}"/>
+				    <arg value="-DCUDAToolkit_ROOT=${CUDAToolkit_ROOT}"/>
+				    <arg value="-DCUDAToolkit_INCLUDE_DIR=${CUDAToolkit_INCLUDE_DIR}"/>
                                     <arg value="-DCUDF_CPP_BUILD_DIR=${CUDF_CPP_BUILD_DIR}"/>
                                     <arg value="-DGPU_ARCHS=${GPU_ARCHS}"/>
                                 </exec>
