@@ -1695,11 +1695,26 @@ convert_to_rows(table_view const &tbl, batch_data &batch_info, offsetFunctor off
       batch_info.d_batch_row_boundaries.data(),
       reinterpret_cast<int8_t **>(dev_output_data.data()));
 
-  detail::copy_validity_to_rows<<<validity_blocks, validity_threads, total_shmem_in_bytes,
-                                  stream.value()>>>(
-      num_rows, num_columns, shmem_limit_per_tile, offset_functor,
-      batch_info.d_batch_row_boundaries.data(), dev_output_data.data(), column_starts.back(),
-      dev_validity_tile_infos, dev_input_nm.data());
+    detail::copy_validity_to_rows<<<validity_blocks, validity_threads, total_shmem_in_bytes,
+                                    stream.value()>>>(
+        num_rows, num_columns, shmem_limit_per_tile, offset_functor,
+        batch_info.d_batch_row_boundaries.data(), dev_output_data.data(), column_starts.back(),
+        dev_validity_tile_infos, dev_input_nm.data());
+  } else {
+    detail::string_row_offset_functor offset_functor(batch_info.batch_row_offsets);
+
+    detail::copy_to_rows<<<blocks, threads, total_shmem_in_bytes, stream.value()>>>(
+        num_rows, num_columns, shmem_limit_per_tile, gpu_tile_infos, dev_input_data.data(),
+        dev_col_sizes.data(), dev_col_starts.data(), offset_functor,
+        batch_info.d_batch_row_boundaries.data(),
+        reinterpret_cast<int8_t **>(dev_output_data.data()));
+
+    detail::copy_validity_to_rows<<<validity_blocks, validity_threads, total_shmem_in_bytes,
+                                    stream.value()>>>(
+        num_rows, num_columns, shmem_limit_per_tile, offset_functor,
+        batch_info.d_batch_row_boundaries.data(), dev_output_data.data(), column_starts.back(),
+        dev_validity_tile_infos, dev_input_nm.data());
+  }
 
   // split up the output buffer into multiple buffers based on row batch sizes
   // and create list of byte columns
