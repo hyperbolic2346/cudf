@@ -42,9 +42,9 @@
 
 #include <cudf/row_conversion.hpp>
 
-#if 0 && (!defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700)
+#if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700
 #include <cuda/barrier>
-#endif //   #if 0 && (!defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700)
+#endif  //   #if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700
 
 #include <algorithm>
 #include <cstdarg>
@@ -67,6 +67,14 @@ constexpr auto MAX_BATCH_SIZE = std::numeric_limits<cudf::size_type>::max();
 using namespace cudf;
 using detail::make_device_uvector_async;
 using rmm::device_uvector;
+
+#if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700
+using cuda::aligned_size_t;
+#else
+template <std::size_t>
+using aligned_size_t = size_t;
+#endif
+
 namespace cudf {
 // namespace jni {
 namespace detail {
@@ -544,18 +552,17 @@ __global__ void copy_to_rows_fixed_width_optimized(const size_type start_row,
   }
 }
 
-#if 0 && (!defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700)
+#if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700
 #define MEMCPY_ASYNC(dst, src, size, barrier) cuda::memcpy_async(dst, src, size, barrier)
 #else
-template <typename T>
-__device__ void handrolled_memcpy_async(int8_t* dst, int8_t const* src, T size)
+__device__ void handrolled_memcpy_async(int8_t* dst, int8_t const* src, size_t size)
 {
-  for (T i = 0; i < size; i++) {
+  for (size_t i = 0; i < size; i++) {
     dst[i] = src[i];
   }
 }
 #define MEMCPY_ASYNC(dst, src, size, barrier) handrolled_memcpy_async(dst, src, size)
-#endif  // #if 0 && (!defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700)
+#endif  // #if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700
 
 /**
  * @brief copy data from cudf columns into JCUDF format, which is row-based
@@ -598,7 +605,7 @@ __global__ void copy_to_rows(const size_type num_rows,
   extern __shared__ int8_t shared_data[];
   int8_t* shared[stages_count] = {shared_data, shared_data + shmem_used_per_tile};
 
-#if 0 && (!defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700)
+#if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700
   __shared__ cuda::barrier<cuda::thread_scope_block> tile_barrier[NUM_TILES_PER_KERNEL_LOADED];
   if (group.thread_rank() == 0) {
     for (int i = 0; i < NUM_TILES_PER_KERNEL_LOADED; ++i) {
@@ -607,7 +614,7 @@ __global__ void copy_to_rows(const size_type num_rows,
   }
 
   group.sync();
-#endif  // #if 0 && (!defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700)
+#endif  // #if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700
 
   auto const tiles_remaining =
     std::min(static_cast<uint>(tile_infos.size()) - blockIdx.x * NUM_TILES_PER_KERNEL_TO_ROWS,
@@ -625,14 +632,15 @@ __global__ void copy_to_rows(const size_type num_rows,
       auto const num_elements_in_tile   = num_fetch_cols * num_fetch_rows;
       auto const fetch_tile_row_size    = fetch_tile.get_shared_row_size(col_offsets, col_sizes);
       auto const starting_column_offset = col_offsets[fetch_tile.start_col];
-#if 0 && (!defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700)
+#if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700
       auto& fetch_barrier = tile_barrier[fetch_index % NUM_TILES_PER_KERNEL_LOADED];
 
       // wait for the last use of the memory to be completed
       if (fetch_index >= NUM_TILES_PER_KERNEL_LOADED) { fetch_barrier.arrive_and_wait(); }
 #else
-int fetch_barrier;
-#endif  // #if 0 && (!defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700)
+      // wait for the last use of the memory to be completed
+      if (fetch_index >= NUM_TILES_PER_KERNEL_LOADED) { group.sync(); }
+#endif  // #if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700
 
       // to do the copy we need to do n column copies followed by m element copies OR
       // we have to do m element copies followed by r row copies. When going from column
@@ -660,37 +668,37 @@ int fetch_barrier;
 
         // copy the element from global memory
         switch (col_size) {
-          #if 0 && (!defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700)
           case 2:
-          MEMCPY_ASYNC(&shared_buffer_base[shared_offset],
+            MEMCPY_ASYNC(&shared_buffer_base[shared_offset],
                          input_src,
-                         cuda::aligned_size_t<2>(col_size),
+                         aligned_size_t<2>(col_size),
                          fetch_barrier);
             break;
           case 4:
-          MEMCPY_ASYNC(&shared_buffer_base[shared_offset],
+            MEMCPY_ASYNC(&shared_buffer_base[shared_offset],
                          input_src,
-                         cuda::aligned_size_t<4>(col_size),
+                         aligned_size_t<4>(col_size),
                          fetch_barrier);
             break;
           case 8:
-          MEMCPY_ASYNC(&shared_buffer_base[shared_offset],
+            MEMCPY_ASYNC(&shared_buffer_base[shared_offset],
                          input_src,
-                         cuda::aligned_size_t<8>(col_size),
+                         aligned_size_t<8>(col_size),
                          fetch_barrier);
             break;
-            #endif // #if 0 && (!defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700)
           default:
-          MEMCPY_ASYNC(&shared_buffer_base[shared_offset], input_src, col_size, fetch_barrier);
+            MEMCPY_ASYNC(&shared_buffer_base[shared_offset], input_src, col_size, fetch_barrier);
             break;
         }
       }
     }
 
-#if 0 && (!defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700)
+#if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700
     auto& processing_barrier = tile_barrier[processing_index % NUM_TILES_PER_KERNEL_LOADED];
     processing_barrier.arrive_and_wait();
-#endif  // #if 0 && (!defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700)
+#else
+    group.sync();
+#endif  // #if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700
 
     auto const tile = tile_infos[blockIdx.x * NUM_TILES_PER_KERNEL_TO_ROWS + processing_index];
     auto const tile_row_size      = tile.get_shared_row_size(col_offsets, col_sizes);
@@ -714,23 +722,21 @@ int fetch_barrier;
       auto const input_src = &shared[processing_index % stages_count]
                                     [tile_row_size * relative_row + relative_chunk_offset];
 
-            MEMCPY_ASYNC(output_dest,
+      MEMCPY_ASYNC(output_dest,
                    input_src,
-                   #if 0 && (!defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700)
-                   cuda::aligned_size_t<bytes_per_chunk>(bytes_per_chunk),
-                   #else
-                   bytes_per_chunk,
-                   #endif
+                   aligned_size_t<bytes_per_chunk>{bytes_per_chunk},
                    processing_barrier);
     }
   }
 
-#if 0 && (!defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700)
+#if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700
   // wait on the last copies to complete
   for (uint i = 0; i < std::min(stages_count, tiles_remaining); ++i) {
     tile_barrier[i].arrive_and_wait();
   }
-#endif  // #if 0 && (!defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700)
+#else
+  group.sync();
+#endif  // #if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700
 }
 
 /**
@@ -775,7 +781,7 @@ __global__ void copy_validity_to_rows(const size_type num_rows,
     std::min(static_cast<uint>(tile_infos.size()) - blockIdx.x * NUM_VALIDITY_TILES_PER_KERNEL,
              static_cast<uint>(NUM_VALIDITY_TILES_PER_KERNEL));
 
-#if 0 && (!defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700)
+#if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700
   __shared__ cuda::barrier<cuda::thread_scope_block>
     shared_tile_barriers[NUM_VALIDITY_TILES_PER_KERNEL_LOADED];
   if (group.thread_rank() == 0) {
@@ -785,14 +791,16 @@ __global__ void copy_validity_to_rows(const size_type num_rows,
   }
 
   group.sync();
-#endif  // #if 0 && (!defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700)
+#endif  // #if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700
 
   for (int validity_tile = 0; validity_tile < tiles_remaining; ++validity_tile) {
-#if 0 && (!defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700)
+#if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700
     if (validity_tile >= NUM_VALIDITY_TILES_PER_KERNEL_LOADED) {
       shared_tile_barriers[validity_tile % NUM_VALIDITY_TILES_PER_KERNEL_LOADED].arrive_and_wait();
     }
-#endif  // #if 0 && (!defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700)
+#else
+    if (validity_tile >= NUM_VALIDITY_TILES_PER_KERNEL_LOADED) group.sync();
+#endif  // #if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700
     int8_t* this_shared_tile = shared_tiles[validity_tile % NUM_VALIDITY_TILES_PER_KERNEL_LOADED];
     auto tile = tile_infos[blockIdx.x * NUM_VALIDITY_TILES_PER_KERNEL + validity_tile];
 
@@ -853,10 +861,10 @@ __global__ void copy_validity_to_rows(const size_type num_rows,
     auto const row_bytes           = util::div_rounding_up_unsafe(num_tile_cols, CHAR_BIT);
     auto const chunks_per_row      = util::div_rounding_up_unsafe(row_bytes, bytes_per_chunk);
     auto const total_chunks        = chunks_per_row * tile.num_rows();
-#if 0 && (!defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700)
+#if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700
     auto& processing_barrier =
       shared_tile_barriers[validity_tile % NUM_VALIDITY_TILES_PER_KERNEL_LOADED];
-#endif  // #if 0 && (!defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700)
+#endif  // #if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700
     auto const tail_bytes = row_bytes % bytes_per_chunk;
     auto const row_batch_start =
       tile.batch_number == 0 ? 0 : batch_row_boundaries[tile.batch_number];
@@ -873,27 +881,25 @@ __global__ void copy_validity_to_rows(const size_type num_rows,
         &this_shared_tile[validity_data_row_length * relative_row + relative_chunk_offset];
 
       if (tail_bytes > 0 && col_chunk == chunks_per_row - 1)
-      MEMCPY_ASYNC(output_dest, input_src, tail_bytes, processing_barrier);
+        MEMCPY_ASYNC(output_dest, input_src, tail_bytes, processing_barrier);
       else
-      MEMCPY_ASYNC(output_dest,
+        MEMCPY_ASYNC(output_dest,
                      input_src,
-                     #if 0 && (!defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700)
-                     cuda::aligned_size_t<bytes_per_chunk>(bytes_per_chunk),
-                     #else
-                     (size_t)bytes_per_chunk,
-                     #endif
+                     aligned_size_t<bytes_per_chunk>(bytes_per_chunk),
                      processing_barrier);
     }
   }
 
-#if 0 && (!defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700)
+#if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700
   // wait for last tiles of data to arrive
   for (int validity_tile = 0;
        validity_tile < tiles_remaining % NUM_VALIDITY_TILES_PER_KERNEL_LOADED;
        ++validity_tile) {
     shared_tile_barriers[validity_tile].arrive_and_wait();
   }
-#endif  // #if 0 && (!defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700)
+#else
+  group.sync();
+#endif  // #if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700
 }
 
 /**
@@ -940,7 +946,7 @@ __global__ void copy_from_rows(const size_type num_rows,
   extern __shared__ int8_t shared_data[];
   int8_t* shared[stages_count] = {shared_data, shared_data + shmem_used_per_tile};
 
-#if 0 && (!defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700)
+#if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700
   __shared__ cuda::barrier<cuda::thread_scope_block> tile_barrier[NUM_TILES_PER_KERNEL_LOADED];
   if (group.thread_rank() == 0) {
     for (int i = 0; i < NUM_TILES_PER_KERNEL_LOADED; ++i) {
@@ -949,7 +955,7 @@ __global__ void copy_from_rows(const size_type num_rows,
   }
 
   group.sync();
-#endif  // #if 0 && (!defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700)
+#endif  // #if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700
 
   auto tiles_remaining =
     std::min(static_cast<uint>(tile_infos.size()) - blockIdx.x * NUM_TILES_PER_KERNEL_FROM_ROWS,
@@ -968,13 +974,16 @@ __global__ void copy_from_rows(const size_type num_rows,
       auto const fetch_tile_row_size  = fetch_tile.get_shared_row_size(col_offsets, col_sizes);
       auto const row_batch_start =
         fetch_tile.batch_number == 0 ? 0 : batch_row_boundaries[fetch_tile.batch_number];
-#if 0 && (!defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700)
+#if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700
       auto& fetch_barrier = tile_barrier[fetch_index % NUM_TILES_PER_KERNEL_LOADED];
 
       // if we have fetched all buffers, we need to wait for processing
       // to complete on them before we can use them again
       if (fetch_index > NUM_TILES_PER_KERNEL_LOADED) { fetch_barrier.arrive_and_wait(); }
-#endif  // #if 0 && (!defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700)
+#else
+      if (fetch_index >= NUM_TILES_PER_KERNEL_LOADED) { group.sync(); }
+
+#endif  // #if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700
 
       for (auto row = fetch_tile_start_row + static_cast<int>(threadIdx.x);
            row <= fetch_tile.end_row;
@@ -988,12 +997,14 @@ __global__ void copy_from_rows(const size_type num_rows,
       }
     }
 
-#if 0 && (!defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700)
+#if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700
     auto& processing_barrier = tile_barrier[processing_index % NUM_TILES_PER_KERNEL_LOADED];
 
     // ensure our data is ready
     processing_barrier.arrive_and_wait();
-#endif  // #if 0 && (!defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700)
+#else
+    group.sync();
+#endif  // #if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700
 
     auto const tile = tile_infos[blockIdx.x * NUM_TILES_PER_KERNEL_FROM_ROWS + processing_index];
     auto const rows_in_tile  = tile.num_rows();
@@ -1026,12 +1037,14 @@ __global__ void copy_from_rows(const size_type num_rows,
     group.sync();
   }
 
-#if 0 && (!defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700)
+#if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700
   // wait on the last copies to complete
   for (uint i = 0; i < std::min(stages_count, tiles_remaining); ++i) {
     tile_barrier[i].arrive_and_wait();
   }
-#endif  // #if 0 && (!defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700)
+#else
+  group.sync();
+#endif  // #if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700
 }
 
 /**
@@ -1076,7 +1089,7 @@ __global__ void copy_validity_from_rows(const size_type num_rows,
     std::min(static_cast<uint>(tile_infos.size()) - blockIdx.x * NUM_VALIDITY_TILES_PER_KERNEL,
              static_cast<uint>(NUM_VALIDITY_TILES_PER_KERNEL));
 
-#if 0 && (!defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700)
+#if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700
   __shared__ cuda::barrier<cuda::thread_scope_block>
     shared_tile_barriers[NUM_VALIDITY_TILES_PER_KERNEL_LOADED];
   if (group.thread_rank() == 0) {
@@ -1089,12 +1102,14 @@ __global__ void copy_validity_from_rows(const size_type num_rows,
 #endif
 
   for (int validity_tile = 0; validity_tile < tiles_remaining; ++validity_tile) {
-#if 0 && (!defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700)
+#if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700
     if (validity_tile >= NUM_VALIDITY_TILES_PER_KERNEL_LOADED) {
       auto const validity_index = validity_tile % NUM_VALIDITY_TILES_PER_KERNEL_LOADED;
       shared_tile_barriers[validity_index].arrive_and_wait();
     }
-#endif  // #if 0 && (!defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700)
+#else
+    if (validity_tile >= NUM_VALIDITY_TILES_PER_KERNEL_LOADED) group.sync();
+#endif  // #if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700
     int8_t* this_shared_tile = shared_tiles[validity_tile % 2];
     auto const tile = tile_infos[blockIdx.x * NUM_VALIDITY_TILES_PER_KERNEL + validity_tile];
     auto const tile_start_col           = tile.start_col;
@@ -1155,10 +1170,10 @@ __global__ void copy_validity_from_rows(const size_type num_rows,
     auto const chunks_per_col      = util::div_rounding_up_unsafe(col_bytes, bytes_per_chunk);
     auto const total_chunks        = chunks_per_col * num_tile_cols;
     auto const tail_bytes          = col_bytes % bytes_per_chunk;
-#if 0 && (!defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700)
+#if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700
     auto& processing_barrier =
       shared_tile_barriers[validity_tile % NUM_VALIDITY_TILES_PER_KERNEL_LOADED];
-#endif  // #if 0 && (!defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700)
+#endif  // #if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700
 
     for (auto i = threadIdx.x; i < total_chunks; i += blockDim.x) {
       // determine source address of my chunk
@@ -1166,7 +1181,8 @@ __global__ void copy_validity_from_rows(const size_type num_rows,
       auto const row_chunk                  = i % chunks_per_col;
       auto const absolute_col               = relative_col + tile_start_col;
       auto const relative_chunk_byte_offset = row_chunk * bytes_per_chunk;
-      auto output_dest = reinterpret_cast<int8_t *>(output_nm[absolute_col] + word_index(tile_start_row) + row_chunk * 2);
+      auto output_dest                      = reinterpret_cast<int8_t*>(output_nm[absolute_col] +
+                                                   word_index(tile_start_row) + row_chunk * 2);
       auto const input_src =
         &this_shared_tile[validity_data_col_length * relative_col + relative_chunk_byte_offset];
 
@@ -1175,17 +1191,13 @@ __global__ void copy_validity_from_rows(const size_type num_rows,
       } else {
         MEMCPY_ASYNC(output_dest,
                      input_src,
-                     #if 0 && (!defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700)
-                     cuda::aligned_size_t<bytes_per_chunk>(bytes_per_chunk),
-                     #else
-                     bytes_per_chunk,
-                     #endif
+                     aligned_size_t<bytes_per_chunk>(bytes_per_chunk),
                      processing_barrier);
       }
     }
   }
 
-#if 0 && (!defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700)
+#if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700
   // wait for last tiles of data to arrive
   auto const num_tiles_to_wait = tiles_remaining > NUM_VALIDITY_TILES_PER_KERNEL_LOADED
                                    ? NUM_VALIDITY_TILES_PER_KERNEL_LOADED
@@ -1193,7 +1205,9 @@ __global__ void copy_validity_from_rows(const size_type num_rows,
   for (int validity_tile = 0; validity_tile < num_tiles_to_wait; ++validity_tile) {
     shared_tile_barriers[validity_tile].arrive_and_wait();
   }
-#endif  // #if 0 && (!defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700)
+#else
+  group.sync();
+#endif  // #if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700
 }
 
 /**
@@ -1774,11 +1788,11 @@ std::vector<std::unique_ptr<column>> convert_to_rows(table_view const& tbl,
   CUDA_TRY(
     cudaDeviceGetAttribute(&total_shmem_in_bytes, cudaDevAttrMaxSharedMemoryPerBlock, device_id));
 
-  #if 0 && (!defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700)
+#if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700
     // Need to reduce total shmem available by the size of barriers in the kernel's shared memory
   total_shmem_in_bytes -=
     sizeof(cuda::barrier<cuda::thread_scope_block>) * NUM_TILES_PER_KERNEL_LOADED;
-    #endif // #if 0 && (!defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700)
+#endif  // #if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700
 
   auto const shmem_limit_per_tile = total_shmem_in_bytes / NUM_TILES_PER_KERNEL_LOADED;
 
@@ -2091,11 +2105,11 @@ std::unique_ptr<table> convert_from_rows(lists_column_view const& input,
   CUDA_TRY(
     cudaDeviceGetAttribute(&total_shmem_in_bytes, cudaDevAttrMaxSharedMemoryPerBlock, device_id));
 
-  #if 0 && (!defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700)
+#if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700
     // Need to reduce total shmem available by the size of barriers in the kernel's shared memory
   total_shmem_in_bytes -=
     sizeof(cuda::barrier<cuda::thread_scope_block>) * NUM_TILES_PER_KERNEL_LOADED;
-  #endif //#if 0 && (!defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700)
+#endif  //#if !defined(__CUDA_ARCH__) || __CUDA_ARCH__ >= 700
 
   int shmem_limit_per_tile = total_shmem_in_bytes / NUM_TILES_PER_KERNEL_LOADED;
 
