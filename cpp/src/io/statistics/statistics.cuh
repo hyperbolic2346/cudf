@@ -21,8 +21,6 @@
 
 #pragma once
 
-#include "byte_array_view.cuh"
-
 #include <cudf/column/column_device_view.cuh>
 #include <cudf/lists/lists_column_view.hpp>
 #include <cudf/strings/string_view.hpp>
@@ -51,6 +49,8 @@ enum statistics_dtype {
   dtype_string,
   dtype_byte_array,
 };
+
+using byte_array_view = cudf::device_span<uint8_t const>;
 
 struct stats_column_desc {
   statistics_dtype stats_dtype;  //!< physical data type of column
@@ -84,8 +84,8 @@ struct t_array_stats {
   }
   __host__ __device__ __forceinline__ operator ReturnType() { return ReturnType(ptr, length); }
 };
-using string_stats     = t_array_stats<string_view, char>;
-using byte_array_stats = t_array_stats<byte_array_view, uint8_t>;
+using string_stats     = t_array_stats<string_view const, char>;
+using byte_array_stats = t_array_stats<byte_array_view const, uint8_t const>;
 
 union statistics_val {
   string_stats str_val;       //!< string columns

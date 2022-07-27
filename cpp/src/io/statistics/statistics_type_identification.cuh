@@ -21,7 +21,7 @@
 
 #pragma once
 
-#include "byte_array_view.cuh"
+#include <io/statistics/statistics.cuh>
 
 #include <cudf/fixed_point/fixed_point.hpp>
 
@@ -242,7 +242,7 @@ __inline__ __device__ constexpr T minimum_identity()
   if constexpr (std::is_same_v<T, string_view>) {
     return string_view::max();
   } else if constexpr (std::is_same_v<T, byte_array_view>) {
-    return byte_array_view::max();
+    return byte_array_view(nullptr, cuda::std::numeric_limits<byte_array_view::size_type>::max());
   }
   return cuda::std::numeric_limits<T>::max();
 }
@@ -253,7 +253,7 @@ __inline__ __device__ constexpr T maximum_identity()
   if constexpr (std::is_same_v<T, string_view>) {
     return string_view::min();
   } else if constexpr (std::is_same_v<T, byte_array_view>) {
-    return byte_array_view::min();
+    return byte_array_view();
   }
   return cuda::std::numeric_limits<T>::lowest();
 }

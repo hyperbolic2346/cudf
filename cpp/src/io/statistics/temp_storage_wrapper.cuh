@@ -21,7 +21,6 @@
 
 #pragma once
 
-#include "byte_array_view.cuh"
 #include "statistics.cuh"
 
 #include <cudf/fixed_point/fixed_point.hpp>

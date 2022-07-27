@@ -22,7 +22,6 @@
 
 #pragma once
 
-#include "byte_array_view.cuh"
 #include "statistics.cuh"
 #include "statistics_type_identification.cuh"
 #include "temp_storage_wrapper.cuh"
@@ -146,6 +145,28 @@ struct typed_statistics_chunk<T, true> {
     non_nulls += chunk.non_nulls;
     null_count += chunk.null_count;
   }
+
+  struct min_functor {
+    [[nodiscard]] __device__ __forceinline__ E operator()(const E& a, const E& b) const
+    {
+      return thrust::min<E>(a, b);
+    }
+  };
+
+  struct max_functor {
+    [[nodiscard]] __device__ __forceinline__ E operator()(const E& a, const E& b) const
+    {
+      return thrust::min<E>(a, b);
+    }
+  };
+
+  struct less_or_equal_functor {
+    template <typename R>
+    [[nodiscard]] __device__ __forceinline__ bool operator()(const R& lhs, const R& rhs) const
+    {
+      return lhs <= rhs;
+    }
+  };
 };
 
 template <typename T>
@@ -166,19 +187,104 @@ struct typed_statistics_chunk<T, false> {
   {
   }
 
+  struct comparison_base {
+    /**
+     * @brief Comparing byte_array_views. Each byte in the array is compared.
+     *
+     * @param el0 byte_array_view to compare with el1.
+     * @param el1 byte_array_view to compare with el0
+     * @return 0  If they compare equal.
+     *         <0 Either the value of the first byte of el0 that does not match is greater in el1 or
+     * all compared bytes match but el0 is shorter. >0 Either the value of the first byte of el0
+     * that does not match is lower in el1 or all compared bytes match but el0 is longer.
+     */
+    [[nodiscard]] __device__ inline int32_t compare(byte_array_view const& el0,
+                                                    byte_array_view const& el1) const
+    {
+      auto const len0  = el0.size_bytes();
+      auto const len1  = el1.size_bytes();
+      auto const* ptr0 = el0.data();
+      auto const* ptr1 = el1.data();
+      if ((ptr0 == ptr1) && (len0 == len1)) { return 0; }
+      // if el0 is max, it is greater than el1
+      if (ptr0 == nullptr && len0 == std::numeric_limits<byte_array_view::size_type>::max()) {
+        return 1;
+      }
+      // if el1 is max, it is greater than el0
+      if (ptr1 == nullptr && len1 == std::numeric_limits<byte_array_view::size_type>::max()) {
+        return -1;
+      }
+      std::size_t idx = 0;
+      for (; (idx < len0) && (idx < len1); ++idx) {
+        if (ptr0[idx] != ptr1[idx]) {
+          return static_cast<int32_t>(ptr0[idx]) - static_cast<int32_t>(ptr1[idx]);
+        }
+      }
+      // if the el1 ran out of data, it is less than el0
+      if (idx < len0) return 1;
+      // if el0 ran out of data first, el0 is less than el1
+      if (idx < len1) return -1;
+      return 0;
+    }
+  };
+
+  struct min_functor : comparison_base {
+    template <typename R, std::enable_if_t<!std::is_same_v<R, byte_array_view>>* = nullptr>
+    [[nodiscard]] __device__ __forceinline__ R operator()(const R& a, const R& b) const
+    {
+      return thrust::min<R>(a, b);
+    }
+
+    template <typename R, std::enable_if_t<std::is_same_v<R, byte_array_view>>* = nullptr>
+    [[nodiscard]] __device__ __forceinline__ R operator()(const R& a, const R& b) const
+    {
+      return compare(a, b) < 0 ? a : b;
+    }
+  };
+
+  struct max_functor : comparison_base {
+    template <typename R, std::enable_if_t<!std::is_same_v<R, byte_array_view>>* = nullptr>
+    [[nodiscard]] __device__ __forceinline__ R operator()(const R& a, const R& b) const
+    {
+      return thrust::max<R>(a, b);
+    }
+
+    template <typename R, std::enable_if_t<std::is_same_v<R, byte_array_view>>* = nullptr>
+    [[nodiscard]] __device__ __forceinline__ R operator()(const R& a, const R& b) const
+    {
+      return compare(a, b) < 0 ? b : a;
+    }
+  };
+
+  struct less_or_equal_functor : comparison_base {
+    template <typename R, std::enable_if_t<!std::is_same_v<R, byte_array_view>>* = nullptr>
+    [[nodiscard]] __device__ __forceinline__ bool operator()(const E& lhs, const E& rhs) const
+    {
+      return lhs <= rhs;
+    }
+
+    template <typename R, std::enable_if_t<std::is_same_v<R, byte_array_view>>* = nullptr>
+    [[nodiscard]] __device__ __forceinline__ bool operator()(const E& lhs, const E& rhs) const
+    {
+      return compare(lhs, rhs) <= 0;
+    }
+  };
+
   __device__ void reduce(const T& elem)
   {
     non_nulls++;
-    minimum_value = thrust::min<E>(minimum_value, detail::extrema_type<T>::convert(elem));
-    maximum_value = thrust::max<E>(maximum_value, detail::extrema_type<T>::convert(elem));
+    minimum_value = min_functor()(minimum_value, detail::extrema_type<T>::convert(elem));
+    maximum_value = max_functor()(maximum_value, detail::extrema_type<T>::convert(elem));
     has_minmax    = true;
   }
 
   __device__ void reduce(const statistics_chunk& chunk)
   {
     if (chunk.has_minmax) {
-      minimum_value = thrust::min<E>(minimum_value, union_member::get<E>(chunk.min_value));
-      maximum_value = thrust::max<E>(maximum_value, union_member::get<E>(chunk.max_value));
+      minimum_value =
+        min_functor().template operator()<E>(minimum_value, union_member::get<E>(chunk.min_value));
+      maximum_value =
+        max_functor().template operator()<E>(maximum_value, union_member::get<E>(chunk.max_value));
     }
     non_nulls += chunk.non_nulls;
     null_count += chunk.null_count;
@@ -203,10 +309,14 @@ __inline__ __device__ typed_statistics_chunk<T, include_aggregate> block_reduce(
   using extrema_reduce = cub::BlockReduce<E, block_size>;
   using count_reduce   = cub::BlockReduce<uint32_t, block_size>;
   output_chunk.minimum_value =
-    extrema_reduce(storage.template get<E>()).Reduce(output_chunk.minimum_value, cub::Min());
+    extrema_reduce(storage.template get<E>())
+      .Reduce(output_chunk.minimum_value,
+              typed_statistics_chunk<T, include_aggregate>::min_functor());
   __syncthreads();
   output_chunk.maximum_value =
-    extrema_reduce(storage.template get<E>()).Reduce(output_chunk.maximum_value, cub::Max());
+    extrema_reduce(storage.template get<E>())
+      .Reduce(output_chunk.maximum_value,
+              typed_statistics_chunk<T, include_aggregate>::max_functor());
   __syncthreads();
   output_chunk.non_nulls =
     count_reduce(storage.template get<uint32_t>()).Sum(output_chunk.non_nulls);

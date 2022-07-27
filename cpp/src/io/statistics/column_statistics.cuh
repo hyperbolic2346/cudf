@@ -197,12 +197,16 @@ struct merge_group_statistics_functor {
   {
     detail::storage_wrapper<block_size> storage(temp_storage);
 
-    typed_statistics_chunk<T, detail::statistics_type_category<T, IO>::include_aggregate> chunk;
+    using chunk_type =
+      typed_statistics_chunk<T, detail::statistics_type_category<T, IO>::include_aggregate>;
+    chunk_type chunk;
 
     for (uint32_t i = t; i < num_chunks; i += block_size) {
       chunk.reduce(chunks[i]);
     }
-    chunk.has_minmax = (chunk.minimum_value <= chunk.maximum_value);
+
+    chunk.has_minmax = chunk_type::less_or_equal_functor().template operator()<chunk_type::E>(
+      chunk.minimum_value, chunk.maximum_value);
 
     chunk = block_reduce(chunk, storage);
 
