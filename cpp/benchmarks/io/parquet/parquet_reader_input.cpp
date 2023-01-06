@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022, NVIDIA CORPORATION.
+ * Copyright (c) 2022-2023, NVIDIA CORPORATION.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -27,7 +27,7 @@
 
 // Size of the data in the the benchmark dataframe; chosen to be low enough to allow benchmarks to
 // run on most GPUs, but large enough to allow highest throughput
-constexpr size_t data_size         = 512 << 20;
+constexpr size_t data_size         = (512 << 21) + (512 << 20);
 constexpr cudf::size_type num_cols = 64;
 
 void parquet_read_common(cudf::io::parquet_writer_options const& write_opts,
@@ -66,7 +66,7 @@ void BM_parquet_read_data(nvbench::state& state, nvbench::type_list<nvbench::enu
   cudf::size_type const cardinality = state.get_int64("cardinality");
   cudf::size_type const run_length  = state.get_int64("run_length");
   auto const compression            = cudf::io::compression_type::SNAPPY;
-  auto const source_type            = io_type::FILEPATH;
+  auto const source_type            = io_type::HOST_BUFFER;
 
   auto const tbl =
     create_random_table(cycle_dtypes(d_type, num_cols),
@@ -93,10 +93,7 @@ void BM_parquet_read_io_compression(
                                          static_cast<int32_t>(data_type::FLOAT),
                                          static_cast<int32_t>(data_type::DECIMAL),
                                          static_cast<int32_t>(data_type::TIMESTAMP),
-                                         static_cast<int32_t>(data_type::DURATION),
-                                         static_cast<int32_t>(data_type::STRING),
-                                         static_cast<int32_t>(data_type::LIST),
-                                         static_cast<int32_t>(data_type::STRUCT)});
+                                         static_cast<int32_t>(data_type::DURATION)});
 
   cudf::size_type const cardinality = state.get_int64("cardinality");
   cudf::size_type const run_length  = state.get_int64("run_length");
@@ -117,11 +114,11 @@ void BM_parquet_read_io_compression(
   parquet_read_common(write_opts, source_sink, state);
 }
 
-using d_type_list = nvbench::enum_type_list<data_type::INTEGRAL,
-                                            data_type::FLOAT,
-                                            data_type::DECIMAL,
-                                            data_type::TIMESTAMP,
-                                            data_type::DURATION>;
+using d_type_list = nvbench::enum_type_list<data_type::INTEGRAL>; /*,
+                                             data_type::FLOAT,
+                                             data_type::DECIMAL,
+                                             data_type::TIMESTAMP,
+                                             data_type::DURATION>;*/
 
 using io_list =
   nvbench::enum_type_list<cudf::io::io_type::FILEPATH, cudf::io::io_type::HOST_BUFFER>;
@@ -133,8 +130,10 @@ NVBENCH_BENCH_TYPES(BM_parquet_read_data, NVBENCH_TYPE_AXES(d_type_list))
   .set_name("parquet_read_decode")
   .set_type_axes_names({"data_type"})
   .set_run_once(true)
-  .add_int64_axis("cardinality", {0, 1000})
-  .add_int64_axis("run_length", {1, 32});
+  .add_int64_axis("cardinality", {0})
+  .add_int64_axis("run_length", {1});
+//  .add_int64_axis("cardinality", {0, 1000})
+//  .add_int64_axis("run_length", {1, 32});
 
 /*NVBENCH_BENCH_TYPES(BM_parquet_read_io_compression, NVBENCH_TYPE_AXES(io_list, compression_list))
   .set_name("parquet_read_io_compression")

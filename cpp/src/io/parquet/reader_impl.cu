@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019-2022, NVIDIA CORPORATION.
+ * Copyright (c) 2019-2023, NVIDIA CORPORATION.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -53,6 +53,7 @@
 #include <array>
 #include <numeric>
 #include <regex>
+//#include <nvToolsExtCudaRt.h>
 
 namespace cudf {
 namespace io {
@@ -61,6 +62,8 @@ namespace parquet {
 // Import functionality that's independent of legacy code
 using namespace cudf::io::parquet;
 using namespace cudf::io;
+
+static constexpr bool debug = false;
 
 namespace {
 
@@ -1238,11 +1241,11 @@ rmm::device_buffer reader::impl::decompress_page_data(
 
   // now copy the uncompressed V2 def and rep level data
   if (not copy_in.empty()) {
-    auto const d_copy_in  = cudf::detail::make_device_uvector_async(copy_in, _stream);
-    auto const d_copy_out = cudf::detail::make_device_uvector_async(copy_out, _stream);
+    auto const d_copy_in  = cudf::detail::make_device_uvector_async(copy_in, stream);
+    auto const d_copy_out = cudf::detail::make_device_uvector_async(copy_out, stream);
 
-    gpu_copy_uncompressed_blocks(d_copy_in, d_copy_out, _stream);
-    _stream.synchronize();
+    gpu_copy_uncompressed_blocks(d_copy_in, d_copy_out, stream);
+    stream.synchronize();
   }
 
   // Update the page information in device memory with the updated value of
@@ -1676,10 +1679,13 @@ std::vector<rmm::cuda_stream_view> get_streams(int32_t count, rmm::cuda_stream_p
   return streams;
 }
 
-rowgroup_data reader::impl::read_row_group(row_group_info const& rgi,
-                                           cudf::io::parquet::RowGroup const& row_group,
-                                           size_type const remaining_rows,
-                                           rmm::cuda_stream_view stream)
+std::future<rowgroup_data> reader::impl::read_row_group(
+  row_group_info const& rgi,
+  cudf::io::parquet::RowGroup const& row_group,
+  size_type const remaining_rows,
+  rmm::cuda_stream_view stream,
+  int stream_idx,
+  int rowgroup_idx)
 {
   CUDF_FUNC_RANGE();
   const auto num_input_columns   = _input_columns.size();
@@ -1690,6 +1696,9 @@ rowgroup_data reader::impl::read_row_group(row_group_info const& rgi,
 
   // Descriptors for all the chunks that make up the selected columns
   const auto num_chunks = num_input_columns;
+
+  if constexpr (debug)
+    printf("reading rowgroup %d with %d chunks\n", rowgroup_idx, (int)num_chunks);
 
   // Association between each column chunk and its source
   std::vector<size_type> chunk_source_map(num_chunks);
@@ -1749,18 +1758,236 @@ rowgroup_data reader::impl::read_row_group(row_group_info const& rgi,
     }
   }
   // Read compressed chunk data to device memory
-  auto task = read_column_chunks(
+  auto read_task = read_column_chunks(
     page_data, chunks, 0, chunks.size(), column_chunk_offsets, chunk_source_map, stream);
 
-  return {std::move(task),
-          std::move(chunks),
-          row_group.num_rows,
-          total_decompressed_size,
-          std::move(chunk_source_map),
-          std::move(column_chunk_offsets),
-          std::move(page_data),
-          stream};
+  auto sync_fn = [](decltype(read_task) read_task, rowgroup_data&& rd) -> rowgroup_data {
+    read_task.wait();
+    return std::move(rd);
+  };
+  rowgroup_data ret = {std::move(chunks),
+                       row_group.num_rows,
+                       total_decompressed_size,
+                       std::move(chunk_source_map),
+                       std::move(column_chunk_offsets),
+                       std::move(page_data),
+                       stream,
+                       stream_idx,
+                       rowgroup_idx};
+  return std::async(std::launch::deferred, sync_fn, std::move(read_task), std::move(ret));
 }
+
+rowgroup_decompress_data reader::impl::decompress_rowgroup(rowgroup_data&& data)
+{
+  CUDF_FUNC_RANGE();
+  if constexpr (debug)
+    printf("decompressing rowgroup %d with %d rows\n", data.rowgroup_idx, (int)data.num_rows);
+
+  // Process dataset chunk pages into output columns
+  const auto total_pages = count_page_headers(data.chunks, data.stream);
+  if (total_pages == 0) {
+    return {hostdevice_vector<gpu::ColumnChunkDesc>{0, 0, data.stream},
+            hostdevice_vector<gpu::PageInfo>{0, 0, data.stream},
+            0,
+            {},
+            {},
+            {},
+            {},
+            data.stream,
+            -1};
+  }
+
+  hostdevice_vector<gpu::PageInfo> pages(total_pages, total_pages, data.stream);
+  rmm::device_buffer decomp_page_data;
+
+  // decoding of column/page information
+  decode_page_headers(data.chunks, pages, data.stream);
+  if (data.decompressed_size > 0) {
+    decomp_page_data = decompress_page_data(data.chunks, pages, data.stream);
+    // Free compressed data
+    for (size_t c = 0; c < data.chunks.size(); c++) {
+      if (data.chunks[c].codec != parquet::Compression::UNCOMPRESSED) { data.page_data[c].reset(); }
+    }
+  }
+
+  return {std::move(data.chunks),
+          std::move(pages),
+          data.num_rows,
+          std::move(data.chunk_source_map),
+          std::move(data.column_chunk_offsets),
+          std::move(data.page_data),
+          std::move(decomp_page_data),
+          data.stream,
+          data.stream_idx};
+}
+
+bool reader::impl::spawn_decompresses_and_wait(std::future<bool>&& reads_spawned)
+{
+  if constexpr (debug) printf("spawning decompresses\n");
+
+  CUDF_FUNC_RANGE();
+  while (reads_spawned.wait_for(std::chrono::seconds(0)) != std::future_status::ready ||
+         !read_data.empty()) {
+    auto next_read_data = [&]() -> std::optional<rowgroup_data> {
+      std::unique_lock lk(read_mutex);
+      if (read_data.empty()) { read_cv.wait(lk); }
+      if (!read_data.empty()) {
+        auto d = std::move(read_data.front());
+        read_data.pop_front();
+        return std::optional<rowgroup_data>(std::move(d));
+      }
+      return std::nullopt;
+    }();
+
+    if (next_read_data) {
+      if constexpr (debug)
+        printf("%ld - decompressing row group %d on stream %d\n",
+               std::chrono::high_resolution_clock::now().time_since_epoch().count(),
+               next_read_data->rowgroup_idx,
+               next_read_data->stream_idx);
+      auto ret = decompress_rowgroup(std::move(*next_read_data));
+      if constexpr (debug)
+        printf("%ld - decompression completed on row group %d on stream %d\n",
+               std::chrono::high_resolution_clock::now().time_since_epoch().count(),
+               next_read_data->rowgroup_idx,
+               next_read_data->stream_idx);
+      {
+        const std::scoped_lock lock(decompress_mutex);
+        decompress_data.push_back(std::move(ret));
+        decompress_cv.notify_one();
+      }
+    }
+  }
+
+  if constexpr (debug) printf("spawning decompress completed\n");
+
+  return true;
+}
+
+bool reader::impl::spawn_reads_and_wait(std::vector<row_group_info> const& selected_row_groups,
+                                        size_type remaining_rows,
+                                        std::vector<rmm::cuda_stream_view> const& streams)
+{
+  CUDF_FUNC_RANGE();
+
+  if constexpr (debug) printf("spawning reads\n");
+  std::vector<std::future<rowgroup_data>> reads;
+
+  for (uint i = 0; i < selected_row_groups.size(); ++i) {
+    auto& rgi             = selected_row_groups[i];
+    const auto& row_group = _metadata->get_row_group(rgi.index, rgi.source_index);
+
+    if constexpr (debug)
+      printf("spawning read of rowgroup %d on stream index %d\n", i, (int)(i % streams.size()));
+    // we don't want a thread per read, so we'll defer launch of these
+    auto task         = read_row_group(selected_row_groups[i],
+                               row_group,
+                               remaining_rows,
+                               streams[i % streams.size()],
+                               i % streams.size(),
+                               i);
+    rowgroup_data ret = task.get();
+    if constexpr (debug)
+      printf("%ld - read %d on stream %d completed\n",
+             std::chrono::high_resolution_clock::now().time_since_epoch().count(),
+             ret.rowgroup_idx,
+             ret.stream_idx);
+    {
+      const std::scoped_lock lock(read_mutex);
+      read_data.push_back(std::move(ret));
+      read_cv.notify_one();
+    }
+
+    remaining_rows -= row_group.num_rows;
+  }
+  assert(remaining_rows <= 0);
+
+  if constexpr (debug) printf("spawning reads completed\n");
+  return true;
+}
+/*
+bool reader::impl::spawn_reads_and_wait(std::vector<row_group_info> const &selected_row_groups,
+size_type remaining_rows, std::vector<rmm::cuda_stream_view> const& streams) { CUDF_FUNC_RANGE();
+
+  if constexpr(debug) printf("spawning reads\n");
+  std::vector<std::future<rowgroup_data>> reads;
+
+  for (uint i = 0; i < selected_row_groups.size(); ++i) {
+    auto& rgi             = selected_row_groups[i];
+    const auto& row_group = _metadata->get_row_group(rgi.index, rgi.source_index);
+
+    if constexpr(debug) printf("spawning read of rowgroup %d on stream index %d\n", i, (int)(i %
+streams.size()));
+    // we don't want a thread per read, so we'll defer launch of these
+    reads.emplace_back(read_row_group(selected_row_groups[i], row_group, remaining_rows, streams[i %
+streams.size()], i % streams.size(), i));
+
+    remaining_rows -= row_group.num_rows;
+  }
+  assert(remaining_rows <= 0);
+
+  for (auto& task : reads) {
+    rowgroup_data ret = task.get();
+    if constexpr(debug) printf("%ld - read %d on stream %d completed\n",
+std::chrono::high_resolution_clock::now().time_since_epoch().count(), ret.rowgroup_idx,
+ret.stream_idx);
+    {
+      const std::scoped_lock lock(read_mutex);
+      read_data.push_back(std::move(ret));
+      read_cv.notify_one();
+    }
+  }
+
+  if constexpr(debug) printf("spawning reads completed\n");
+  return true;
+}
+*/
+void reader::impl::decode_rowgroup(size_type skip_rows,
+                                   size_type num_rows,
+                                   bool uses_custom_row_bounds,
+                                   rowgroup_decompress_data&& data)
+{
+  CUDF_FUNC_RANGE();
+  if constexpr (debug) printf("decoding %d pages\n", (int)data.pages.size());
+  // Process dataset chunk pages into output columns
+  const auto total_pages = data.pages.size();
+  if (total_pages > 0) {
+    // build output column info
+    // walk the schema, building out_buffers that mirror what our final cudf columns will look
+    // like. important : there is not necessarily a 1:1 mapping between input columns and output
+    // columns. For example, parquet does not explicitly store a ColumnChunkDesc for struct
+    // columns. The "structiness" is simply implied by the schema.  For example, this schema:
+    //  required group field_id=1 name {
+    //    required binary field_id=2 firstname (String);
+    //    required binary field_id=3 middlename (String);
+    //    required binary field_id=4 lastname (String);
+    // }
+    // will only contain 3 columns of data (firstname, middlename, lastname).  But of course
+    // "name" is a struct column that we want to return, so we have to make sure that we
+    // create it ourselves.
+    // std::vector<output_column_info> output_info = build_output_column_info();
+
+    // nesting information (sizes, etc) stored -per page-
+    // note : even for flat schemas, we allocate 1 level of "nesting" info
+    hostdevice_vector<gpu::PageNestingInfo> page_nesting_info;
+    allocate_nesting_info(data.chunks, data.pages, page_nesting_info, data.stream);
+
+    // - compute column sizes and allocate output buffers.
+    //   important:
+    //   for nested schemas, we have to do some further preprocessing to determine:
+    //    - real column output sizes per level of nesting (in a flat schema, there's only 1
+    //    level of
+    //      nesting and it's size is the row count)
+    //
+    // - for nested schemas, output buffer offset values per-page, per nesting-level for the
+    // purposes of decoding.
+    preprocess_columns(
+      data.chunks, data.pages, skip_rows, num_rows, uses_custom_row_bounds, data.stream);
+
+    // decoding of column data itself
+    decode_page_data(data.chunks, data.pages, page_nesting_info, skip_rows, num_rows, data.stream);
+  }
+};
 
 table_with_metadata reader::impl::read(size_type skip_rows,
                                        size_type num_rows,
@@ -1768,6 +1995,7 @@ table_with_metadata reader::impl::read(size_type skip_rows,
                                        std::vector<std::vector<size_type>> const& row_group_list)
 {
   const auto num_input_columns = _input_columns.size();
+  if constexpr (debug) printf("read:\n");
 
   // Select only row groups required
   const auto selected_row_groups =
@@ -1782,177 +2010,184 @@ table_with_metadata reader::impl::read(size_type skip_rows,
   if (selected_row_groups.size() != 0 && _input_columns.size() != 0) {
     // Descriptors for all the chunks that make up the selected columns
     const auto num_chunks = selected_row_groups.size() * num_input_columns;
-    auto remaining_rows   = num_rows;
+    enum METHOD { SINGLE_THREADED, THREAD_PER_STAGE, THREAD_PER_STREAM };
+    constexpr METHOD scheme = SINGLE_THREADED;
 
-    auto process = [this, skip_rows, num_rows, uses_custom_row_bounds](rowgroup_data& data) {
-      CUDF_FUNC_RANGE();
-      // Process dataset chunk pages into output columns
-      const auto total_pages = count_page_headers(data.chunks, data.stream);
-      if (total_pages > 0) {
-        hostdevice_vector<gpu::PageInfo> pages(total_pages, total_pages, data.stream);
-        rmm::device_buffer decomp_page_data;
+    switch (scheme) {
+      case THREAD_PER_STAGE: {
+        constexpr auto num_streams = 2;
 
-        // decoding of column/page information
-        decode_page_headers(data.chunks, pages, data.stream);
-        if (data.decompressed_size > 0) {
-          decomp_page_data = decompress_page_data(data.chunks, pages, data.stream);
-          // Free compressed data
-          for (size_t c = 0; c < data.chunks.size(); c++) {
-            if (data.chunks[c].codec != parquet::Compression::UNCOMPRESSED) {
-              data.page_data[c].reset();
-            }
-          }
-        }
+        auto stream_pool = rmm::cuda_stream_pool(num_streams);
+        auto streams     = get_streams(num_streams, stream_pool);
 
-        // build output column info
-        // walk the schema, building out_buffers that mirror what our final cudf columns will look
-        // like. important : there is not necessarily a 1:1 mapping between input columns and output
-        // columns. For example, parquet does not explicitly store a ColumnChunkDesc for struct
-        // columns. The "structiness" is simply implied by the schema.  For example, this schema:
-        //  required group field_id=1 name {
-        //    required binary field_id=2 firstname (String);
-        //    required binary field_id=3 middlename (String);
-        //    required binary field_id=4 lastname (String);
-        // }
-        // will only contain 3 columns of data (firstname, middlename, lastname).  But of course
-        // "name" is a struct column that we want to return, so we have to make sure that we
-        // create it ourselves.
-        // std::vector<output_column_info> output_info = build_output_column_info();
+        /*      nvtxNameCudaStreamA(streams[0], "stream 0");
+              nvtxNameCudaStreamA(streams[1], "stream 1");*/
 
-        // nesting information (sizes, etc) stored -per page-
-        // note : even for flat schemas, we allocate 1 level of "nesting" info
-        hostdevice_vector<gpu::PageNestingInfo> page_nesting_info;
-        allocate_nesting_info(data.chunks, pages, page_nesting_info, data.stream);
+        // spawn a thread to burn through queuing all the reads
+        auto read_tasks_spawned = std::async(std::launch::async,
+                                             &reader::impl::spawn_reads_and_wait,
+                                             this,
+                                             selected_row_groups,
+                                             num_rows,
+                                             streams);
 
-        // - compute column sizes and allocate output buffers.
-        //   important:
-        //   for nested schemas, we have to do some further preprocessing to determine:
-        //    - real column output sizes per level of nesting (in a flat schema, there's only 1
-        //    level of
-        //      nesting and it's size is the row count)
-        //
-        // - for nested schemas, output buffer offset values per-page, per nesting-level for the
-        // purposes of decoding.
-        preprocess_columns(
-          data.chunks, pages, skip_rows, num_rows, uses_custom_row_bounds, data.stream);
+        // spawn a thread to pluck completed reads and decompress data
+        auto decompress_tasks_spawned = std::async(std::launch::async,
+                                                   &reader::impl::spawn_decompresses_and_wait,
+                                                   this,
+                                                   std::move(read_tasks_spawned));
 
-        // decoding of column data itself
-        decode_page_data(data.chunks, pages, page_nesting_info, skip_rows, num_rows, data.stream);
-      }
-    };
-
-    constexpr bool multi_threaded = true;
-
-    std::mutex queue_mutex;
-    std::deque<rowgroup_data> reads;
-
-    auto spawn_reads = [&](std::vector<rmm::cuda_stream_view> const& streams) {
-      CUDF_FUNC_RANGE();
-      for (uint i = 0; i < selected_row_groups.size(); ++i) {
-        auto& rgi             = selected_row_groups[i];
-        const auto& row_group = _metadata->get_row_group(rgi.index, rgi.source_index);
-        auto read_data        = read_row_group(
-          selected_row_groups[i], row_group, remaining_rows, streams[i % streams.size()]);
-        {
-          const std::scoped_lock lock(queue_mutex);
-          reads.push_back(std::move(read_data));
-        }
-
-        remaining_rows -= row_group.num_rows;
-      }
-      assert(remaining_rows <= 0);
-      return true;
-    };
-
-    if (multi_threaded) {
-      constexpr auto num_streams = 2;
-
-      auto stream_pool = rmm::cuda_stream_pool(num_streams);
-      auto streams     = get_streams(num_streams, stream_pool);
-
-      // spawn a thread to burn through queuing all the reads
-      auto read_task = std::async(std::launch::async, spawn_reads, streams);
-
-      while (read_task.wait_for(std::chrono::seconds(0)) != std::future_status::ready ||
-             !reads.empty()) {
-        // attempt to grab from queue and process
-        if (!reads.empty()) {
-          auto read_data = [&]() -> std::optional<rowgroup_data> {
-            {
-              const std::scoped_lock lock(queue_mutex);
-              if (!reads.empty()) {
-                auto read_data = std::move(reads.front());
-                reads.pop_front();
-                return std::optional<rowgroup_data>(std::move(read_data));
-              }
+        while (decompress_tasks_spawned.wait_for(std::chrono::seconds(0)) !=
+                 std::future_status::ready ||
+               !decompress_data.empty()) {
+          auto decompressed_data = [&]() -> std::optional<rowgroup_decompress_data> {
+            std::unique_lock lk(decompress_mutex);
+            if (decompress_data.empty()) { decompress_cv.wait(lk); }
+            if (!decompress_data.empty()) {
+              auto decompressed_data = std::move(decompress_data.front());
+              decompress_data.pop_front();
+              return std::optional<rowgroup_decompress_data>(std::move(decompressed_data));
             }
             return std::nullopt;
           }();
-          if (read_data) {
-            read_data->task.wait();
-            process(*read_data);
+
+          if (decompressed_data) {
+            decode_rowgroup(
+              skip_rows, num_rows, uses_custom_row_bounds, std::move(*decompressed_data));
           }
         }
-        std::this_thread::yield();
+
+        join_stream(streams, _stream);
+        break;
       }
+      case THREAD_PER_STREAM: {
+        constexpr auto num_streams = 2;
 
-      join_stream(streams, _stream);
+        auto stream_pool = rmm::cuda_stream_pool(num_streams);
+        auto streams     = get_streams(num_streams, stream_pool);
 
-    } else {
-      // spawn all reads
-      spawn_reads({_stream});
+        auto thread = [&](int index, int num_threads) {
+          int rows_processed = 0;
+          int const num_rowgroups_per_thread =
+            std::max(1, (int)(selected_row_groups.size() / num_threads));
+          int const my_start_rowgroup  = num_rowgroups_per_thread * index;
+          int const my_ending_rowgroup = index == num_threads - 1
+                                           ? (int)selected_row_groups.size()
+                                           : num_rowgroups_per_thread * (index + 1);
+          if constexpr (debug)
+            printf("thread %d is processing rowgroups %d -> %d out of %d -> %d\n",
+                   index,
+                   my_start_rowgroup,
+                   my_ending_rowgroup,
+                   0,
+                   (int)selected_row_groups.size());
+          for (int i = my_start_rowgroup;
+               i < my_ending_rowgroup && i < (int)selected_row_groups.size();
+               i++) {
+            auto& rgi             = selected_row_groups[i];
+            const auto& row_group = _metadata->get_row_group(rgi.index, rgi.source_index);
 
-      // wait for all the reads
-      for (auto& read : reads) {
-        read.task.wait();
-      }
-
-      // merge read data into a single blob for a single batch of kernel launches
-      {
-        size_t num_chunks =
-          std::accumulate(reads.begin(), reads.end(), 0, [](size_t count, rowgroup_data const& el) {
-            return count + el.chunks.size();
-          });
-
-        rowgroup_data globbed = [&]() -> cudf::io::detail::parquet::rowgroup_data {
-          if (reads.size() == 1) {
-            auto ret = std::move(reads.front());
-            reads.pop_front();
-            return ret;
-          } else {
-            return {{},
-                    hostdevice_vector<gpu::ColumnChunkDesc>{0, num_chunks, _stream},
-                    0,
-                    0,
-                    {},
-                    {},
-                    {},
-                    _stream};
+            if constexpr (debug)
+              printf("spawning read of rowgroup %d on stream index %d\n", i, index);
+            // we don't want a thread per read, so we'll defer launch of these
+            // TODO remaining rows to limit rows read
+            auto rg =
+              read_row_group(selected_row_groups[i], row_group, num_rows, streams[index], index, i);
+            auto drg = decompress_rowgroup(std::move(rg.get()));
+            decode_rowgroup(skip_rows, num_rows, uses_custom_row_bounds, std::move(drg));
+            rows_processed += row_group.num_rows;
           }
-        }();
 
-        while (!reads.empty()) {
-          auto d = std::move(reads.front());
-          reads.pop_front();
+          return rows_processed;
+        };
 
-          // no way to move a host vector on to the end of another
-          std::for_each(d.chunks.begin(), d.chunks.end(), [&globbed](auto const& c) {
-            globbed.chunks.push_back(c);
-          });
-          globbed.num_rows += d.num_rows;
-          globbed.decompressed_size += d.decompressed_size;
-          globbed.chunk_source_map.insert(
-            globbed.chunk_source_map.end(), d.chunk_source_map.begin(), d.chunk_source_map.end());
-          globbed.column_chunk_offsets.insert(globbed.column_chunk_offsets.end(),
-                                              d.column_chunk_offsets.begin(),
-                                              d.column_chunk_offsets.end());
-          globbed.page_data.insert(globbed.page_data.end(),
-                                   std::make_move_iterator(d.page_data.begin()),
-                                   std::make_move_iterator(d.page_data.end()));
+        std::vector<std::future<int>> threads;
+        for (int i = 0; i < num_streams; ++i) {
+          threads.push_back(std::async(std::launch::async, thread, i, num_streams));
         }
 
-        // process reads
-        process(globbed);
+        int processed_rows = 0;
+        for (auto& t : threads) {
+          processed_rows += t.get();
+        }
+        assert(num_rows == processed_rows);
+        join_stream(streams, _stream);
+        break;
+      }
+      case SINGLE_THREADED: {
+        // spawn and wait on all reads
+        spawn_reads_and_wait(selected_row_groups, num_rows, {_stream});
+
+        // make a future that is set true now in order to call spawn_decompresses
+        std::promise<bool> p;
+        p.set_value(true);
+
+        // spawn and wait for all decompresses
+        spawn_decompresses_and_wait(p.get_future());
+
+        for (auto& dd : decompress_data) {
+          decode_rowgroup(skip_rows, num_rows, uses_custom_row_bounds, std::move(dd));
+        }
+        /*
+              // merge read data into a single blob for a single batch of kernel launches
+              {
+                rowgroup_decompress_data globbed = [&]() ->
+           cudf::io::detail::parquet::rowgroup_decompress_data { if (decompress_data.size() == 1) {
+                    auto ret = std::move(decompress_data.front());
+                    decompress_data.pop_front();
+                    return ret;
+                  } else {
+                    size_t num_chunks =
+                      std::accumulate(decompress_data.begin(), decompress_data.end(), 0, [](size_t
+           count, rowgroup_decompress_data const& el) { return count + el.chunks.size();
+                      });
+
+                    size_t num_pages =
+                      std::accumulate(decompress_data.begin(), decompress_data.end(), 0, [](size_t
+           count, rowgroup_decompress_data const& el) { return count + el.pages.size();
+                      });
+
+                    return {hostdevice_vector<gpu::ColumnChunkDesc>{0, num_chunks, _stream},
+                            hostdevice_vector<gpu::PageInfo>{0, num_pages, _stream},
+                            0,
+                            {},
+                            {},
+                            {},
+                            {},
+                            _stream};
+                  }
+                }();
+                std::vector<rmm::device_buffer> decompress_buffers;
+
+                while (!decompress_data.empty()) {
+                  auto d = std::move(decompress_data.front());
+                  decompress_data.pop_front();
+
+                  // no way to move a host vector on to the end of another
+                  std::for_each(d.chunks.begin(), d.chunks.end(), [&globbed](auto const& c) {
+                    globbed.chunks.push_back(c);
+                  });
+                  std::for_each(d.pages.begin(), d.pages.end(), [&globbed](auto const& p) {
+                    globbed.pages.push_back(p);
+                  });
+                  globbed.num_rows += d.num_rows;
+                  globbed.chunk_source_map.insert(
+                    globbed.chunk_source_map.end(), d.chunk_source_map.begin(),
+           d.chunk_source_map.end());
+                  globbed.column_chunk_offsets.insert(globbed.column_chunk_offsets.end(),
+                                                      d.column_chunk_offsets.begin(),
+                                                      d.column_chunk_offsets.end());
+                  globbed.page_data.insert(globbed.page_data.end(),
+                                          std::make_move_iterator(d.page_data.begin()),
+                                          std::make_move_iterator(d.page_data.end()));
+                  decompress_buffers.emplace_back(std::move(d.decompressed_data));
+                }
+
+                // process reads
+                decode_rowgroup(skip_rows, num_rows, uses_custom_row_bounds, std::move(globbed));
+
+              }*/
+        break;
       }
     }
 

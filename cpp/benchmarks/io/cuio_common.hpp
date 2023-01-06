@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2022, NVIDIA CORPORATION.
+ * Copyright (c) 2020-2023, NVIDIA CORPORATION.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -54,6 +54,11 @@ class cuio_source_sink_pair {
   {
     // delete the temporary file
     std::remove(file_name.c_str());
+
+    if (_pinned != nullptr) {
+      cudaFreeHost(_pinned);
+      _pinned = nullptr;
+    }
   }
   /**
    * @brief Created a source info of the set type
@@ -82,6 +87,7 @@ class cuio_source_sink_pair {
 
   io_type const type;
   std::vector<char> buffer;
+  char* _pinned{nullptr};
   std::string const file_name;
   bytes_written_only_sink void_sink;
 };

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019-2022, NVIDIA CORPORATION.
+ * Copyright (c) 2019-2023, NVIDIA CORPORATION.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -33,6 +33,7 @@
 
 #include <rmm/cuda_stream_view.hpp>
 
+#include <deque>
 #include <memory>
 #include <string>
 #include <utility>
@@ -59,7 +60,6 @@ struct row_group_info {
 };
 
 struct rowgroup_data {
-  std::future<void> task;
   hostdevice_vector<gpu::ColumnChunkDesc> chunks;
   int64_t num_rows;
   size_t decompressed_size;
@@ -67,16 +67,20 @@ struct rowgroup_data {
   std::vector<size_t> column_chunk_offsets;
   std::vector<std::unique_ptr<datasource::buffer>> page_data;
   rmm::cuda_stream_view stream;
+  int stream_idx;
+  int rowgroup_idx;
+};
 
-  void clear()
-  {
-    chunks.clear();
-    num_rows          = 0;
-    decompressed_size = 0;
-    chunk_source_map.clear();
-    column_chunk_offsets.clear();
-    page_data.clear();
-  }
+struct rowgroup_decompress_data {
+  hostdevice_vector<gpu::ColumnChunkDesc> chunks;
+  hostdevice_vector<gpu::PageInfo> pages;
+  int64_t num_rows;
+  std::vector<size_type> chunk_source_map;
+  std::vector<size_t> column_chunk_offsets;
+  std::vector<std::unique_ptr<datasource::buffer>> page_data;
+  rmm::device_buffer decompressed_data;
+  rmm::cuda_stream_view stream;
+  int stream_idx;
 };
 
 /**
@@ -224,10 +228,22 @@ class reader::impl {
                         size_t total_rows,
                         rmm::cuda_stream_view stream);
 
-  rowgroup_data read_row_group(row_group_info const& rgi,
-                               cudf::io::parquet::RowGroup const& row_group,
-                               size_type const remaining_rows,
-                               rmm::cuda_stream_view stream);
+  std::future<rowgroup_data> read_row_group(row_group_info const& rgi,
+                                            cudf::io::parquet::RowGroup const& row_group,
+                                            size_type const remaining_rows,
+                                            rmm::cuda_stream_view stream,
+                                            int stream_idx,
+                                            int rowgroup_idx);
+
+  rowgroup_decompress_data decompress_rowgroup(rowgroup_data&& data);
+  bool spawn_decompresses_and_wait(std::future<bool>&& reads_spawned);
+  bool spawn_reads_and_wait(std::vector<row_group_info> const& selected_row_groups,
+                            size_type remaining_rows,
+                            std::vector<rmm::cuda_stream_view> const& streams);
+  void decode_rowgroup(size_type skip_rows,
+                       size_type num_rows,
+                       bool uses_custom_row_bounds,
+                       rowgroup_decompress_data&& data);
 
  private:
   rmm::cuda_stream_view _stream;
@@ -246,6 +262,13 @@ class reader::impl {
   bool _strings_to_categorical = false;
   std::optional<std::vector<reader_column_schema>> _reader_column_schema;
   data_type _timestamp_type{type_id::EMPTY};
+
+  std::mutex read_mutex;
+  std::condition_variable read_cv;
+  std::deque<rowgroup_data> read_data;
+  std::mutex decompress_mutex;
+  std::condition_variable decompress_cv;
+  std::deque<rowgroup_decompress_data> decompress_data;
 };
 
 }  // namespace parquet

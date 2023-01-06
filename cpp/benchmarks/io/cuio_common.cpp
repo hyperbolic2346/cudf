@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2022, NVIDIA CORPORATION.
+ * Copyright (c) 2020-2023, NVIDIA CORPORATION.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -45,7 +45,14 @@ cudf::io::source_info cuio_source_sink_pair::make_source_info()
 {
   switch (type) {
     case io_type::FILEPATH: return cudf::io::source_info(file_name);
-    case io_type::HOST_BUFFER: return cudf::io::source_info(buffer.data(), buffer.size());
+    case io_type::HOST_BUFFER:
+      if (_pinned != nullptr) {
+        cudaFreeHost(_pinned);
+        _pinned = nullptr;
+      }
+      RMM_CUDA_TRY(cudaMallocHost(&_pinned, buffer.size()));
+      cudaMemcpy(_pinned, buffer.data(), buffer.size(), cudaMemcpyDefault);
+      return cudf::io::source_info(_pinned, buffer.size());
     default: CUDF_FAIL("invalid input type");
   }
 }
