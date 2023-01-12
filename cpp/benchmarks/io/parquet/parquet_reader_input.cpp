@@ -114,11 +114,11 @@ void BM_parquet_read_io_compression(
   parquet_read_common(write_opts, source_sink, state);
 }
 
-using d_type_list = nvbench::enum_type_list<data_type::INTEGRAL>; /*,
-                                             data_type::FLOAT,
-                                             data_type::DECIMAL,
-                                             data_type::TIMESTAMP,
-                                             data_type::DURATION>;*/
+using d_type_list = nvbench::enum_type_list<data_type::INTEGRAL>; /*data_type::INTEGRAL,
+                                              data_type::FLOAT,
+                                              data_type::DECIMAL>,
+                                              data_type::TIMESTAMP,
+                                              data_type::DURATION>*/
 
 using io_list =
   nvbench::enum_type_list<cudf::io::io_type::FILEPATH, cudf::io::io_type::HOST_BUFFER>;

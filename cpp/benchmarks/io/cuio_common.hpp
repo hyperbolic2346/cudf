@@ -55,10 +55,12 @@ class cuio_source_sink_pair {
     // delete the temporary file
     std::remove(file_name.c_str());
 
+#ifdef PINNED
     if (_pinned != nullptr) {
       cudaFreeHost(_pinned);
       _pinned = nullptr;
     }
+#endif
   }
   /**
    * @brief Created a source info of the set type
@@ -87,7 +89,9 @@ class cuio_source_sink_pair {
 
   io_type const type;
   std::vector<char> buffer;
+#ifdef PINNED
   char* _pinned{nullptr};
+#endif
   std::string const file_name;
   bytes_written_only_sink void_sink;
 };

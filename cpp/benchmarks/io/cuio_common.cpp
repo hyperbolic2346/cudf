@@ -46,6 +46,7 @@ cudf::io::source_info cuio_source_sink_pair::make_source_info()
   switch (type) {
     case io_type::FILEPATH: return cudf::io::source_info(file_name);
     case io_type::HOST_BUFFER:
+#ifdef PINNED
       if (_pinned != nullptr) {
         cudaFreeHost(_pinned);
         _pinned = nullptr;
@@ -53,6 +54,9 @@ cudf::io::source_info cuio_source_sink_pair::make_source_info()
       RMM_CUDA_TRY(cudaMallocHost(&_pinned, buffer.size()));
       cudaMemcpy(_pinned, buffer.data(), buffer.size(), cudaMemcpyDefault);
       return cudf::io::source_info(_pinned, buffer.size());
+#else
+      return cudf::io::source_info(buffer.data(), buffer.size());
+#endif
     default: CUDF_FAIL("invalid input type");
   }
 }

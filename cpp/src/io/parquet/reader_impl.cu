@@ -1400,14 +1400,7 @@ void reader::impl::preprocess_columns(hostdevice_vector<gpu::ColumnChunkDesc>& c
       // to know how big this buffer actually is.
       if (out_buf.user_data & PARQUET_COLUMN_BUFFER_FLAG_HAS_LIST_PARENT) {
         has_lists = true;
-      }
-      // if we haven't already processed this column because it is part of a struct hierarchy
-      else if (out_buf.size == 0) {
-        // add 1 for the offset if this is a list column
-        out_buf.create(
-          out_buf.type.id() == type_id::LIST && l_idx < max_depth ? total_rows + 1 : total_rows,
-          stream,
-          _mr);
+        break;
       }
     }
   }
@@ -2010,8 +2003,35 @@ table_with_metadata reader::impl::read(size_type skip_rows,
   if (selected_row_groups.size() != 0 && _input_columns.size() != 0) {
     // Descriptors for all the chunks that make up the selected columns
     const auto num_chunks = selected_row_groups.size() * num_input_columns;
+
+    // preprocess output column buffers so we don't have to mutex access
+    for (size_t idx = 0; idx < _input_columns.size(); idx++) {
+      auto const& input_col  = _input_columns[idx];
+      size_t const max_depth = input_col.nesting_depth();
+
+      // only one thread can poke with output columns at a time
+      auto* cols = &_output_columns;
+      for (size_t l_idx = 0; l_idx < max_depth; l_idx++) {
+        auto& out_buf = (*cols)[input_col.nesting[l_idx]];
+        cols          = &out_buf.children;
+
+        // if this has a list parent, we will have to do further work in gpu::PreprocessColumnData
+        // to know how big this buffer actually is.
+        if (out_buf.user_data & PARQUET_COLUMN_BUFFER_FLAG_HAS_LIST_PARENT) {
+        }
+        // if we haven't already processed this column because it is part of a struct hierarchy
+        else if (out_buf.size == 0) {
+          // add 1 for the offset if this is a list column
+          out_buf.create(
+            out_buf.type.id() == type_id::LIST && l_idx < max_depth ? num_rows + 1 : num_rows,
+            _stream,
+            _mr);
+        }
+      }
+    }
+
     enum METHOD { SINGLE_THREADED, THREAD_PER_STAGE, THREAD_PER_STREAM };
-    constexpr METHOD scheme = SINGLE_THREADED;
+    constexpr METHOD scheme = THREAD_PER_STREAM;
 
     switch (scheme) {
       case THREAD_PER_STAGE: {
