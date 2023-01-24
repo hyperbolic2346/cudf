@@ -344,7 +344,8 @@ void write_chunked_begin(data_sink* out_sink,
     }
     header.append(terminator);
 
-    out_sink->host_write(header.data(), header.size());
+    out_sink->host_write(
+      host_span<std::byte const>{reinterpret_cast<std::byte const*>(header.data()), header.size()});
   }
 }
 
@@ -383,7 +384,7 @@ void write_chunked(data_sink* out_sink,
     out_sink->device_write(ptr_all_bytes, total_num_bytes, stream);
   } else {
     // copy the bytes to host to write them out
-    thrust::host_vector<char> h_bytes(total_num_bytes);
+    thrust::host_vector<std::byte> h_bytes(total_num_bytes);
     CUDF_CUDA_TRY(cudaMemcpyAsync(h_bytes.data(),
                                   ptr_all_bytes,
                                   total_num_bytes * sizeof(char),
@@ -391,15 +392,15 @@ void write_chunked(data_sink* out_sink,
                                   stream.value()));
     stream.synchronize();
 
-    out_sink->host_write(h_bytes.data(), total_num_bytes);
+    out_sink->host_write(h_bytes);
   }
 
   // Needs newline at the end, to separate from next chunk
   if (out_sink->is_device_write_preferred(newline.size())) {
     out_sink->device_write(newline.data(), newline.size(), stream);
   } else {
-    out_sink->host_write(options.get_line_terminator().data(),
-                         options.get_line_terminator().size());
+    out_sink->host_write({reinterpret_cast<std::byte*>(options.get_line_terminator().data()),
+                          options.get_line_terminator().size()});
   }
 }
 

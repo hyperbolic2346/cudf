@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2022, NVIDIA CORPORATION.
+ * Copyright (c) 2020-2023, NVIDIA CORPORATION.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,6 +18,7 @@
 
 #include <cudf/types.hpp>
 #include <cudf/utilities/error.hpp>
+#include <cudf/utilities/span.hpp>
 
 #include <rmm/cuda_stream_view.hpp>
 
@@ -48,7 +49,7 @@ class data_sink {
    * @param[in,out] buffer Pointer to the output vector
    * @return Constructed data_sink object
    */
-  static std::unique_ptr<data_sink> create(std::vector<char>* buffer);
+  static std::unique_ptr<data_sink> create(std::vector<std::byte>* buffer);
 
   /**
    * @brief Create a void sink (one that does no actual io)
@@ -101,7 +102,7 @@ class data_sink {
    * @param[in] data Pointer to the buffer to be written into the sink object
    * @param[in] size Number of bytes to write
    */
-  virtual void host_write(void const* data, size_t size) = 0;
+  virtual void host_write(cudf::host_span<std::byte const> data) = 0;
 
   /**
    * @brief Whether or not this sink supports writing from gpu memory addresses.

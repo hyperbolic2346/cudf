@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2022, NVIDIA CORPORATION.
+ * Copyright (c) 2020-2023, NVIDIA CORPORATION.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -42,7 +42,7 @@ template <int index>
 struct FunctionSwitchImpl {
   template <typename... Operator>
   static inline void run(ProtobufReader* pbr,
-                         const uint8_t* end,
+                         std::byte const* end,
                          const int& encoded_field_number,
                          std::tuple<Operator...>& ops)
   {
@@ -58,7 +58,7 @@ template <>
 struct FunctionSwitchImpl<0> {
   template <typename... Operator>
   static inline void run(ProtobufReader* pbr,
-                         const uint8_t* end,
+                         std::byte const* end,
                          const int& encoded_field_number,
                          std::tuple<Operator...>& ops)
   {

@@ -41,7 +41,10 @@ class cuio_source_sink_pair {
     size_t _bytes_written = 0;
 
    public:
-    void host_write(void const* data, size_t size) override { _bytes_written += size; }
+    void host_write(cudf::host_span<std::byte const> data) override
+    {
+      _bytes_written += data.size();
+    }
     void flush() override {}
     size_t bytes_written() override { return _bytes_written; }
   };
@@ -81,7 +84,7 @@ class cuio_source_sink_pair {
   static temp_directory const tmpdir;
 
   io_type const type;
-  std::vector<char> h_buffer;
+  std::vector<std::byte> h_buffer;
   rmm::device_uvector<std::byte> d_buffer;
   std::string const file_name;
   bytes_written_only_sink void_sink;

@@ -28,7 +28,7 @@ namespace cudf {
 namespace io {
 namespace orc {
 
-uint32_t ProtobufReader::read_field_size(const uint8_t* end)
+uint32_t ProtobufReader::read_field_size(const std::byte* end)
 {
   auto const size = get<uint32_t>();
   CUDF_EXPECTS(size <= static_cast<uint32_t>(end - m_cur), "Protobuf parsing out of bounds");
@@ -213,27 +213,27 @@ void ProtobufWriter::put_row_index_entry(int32_t present_blk,
                                          TypeKind kind,
                                          ColStatsBlob const* stats)
 {
-  std::vector<uint8_t> positions_data;
+  std::vector<std::byte> positions_data;
   ProtobufWriter position_writer(&positions_data);
   auto const positions_size_offset = position_writer.put_uint(
-    encode_field_number(1, ProtofType::FIXEDLEN));  // 1:positions[packed=true]
-  position_writer.put_byte(0xcd);                   // positions size placeholder
+    encode_field_number(1, ProtofType::FIXEDLEN));         // 1:positions[packed=true]
+  position_writer.put_byte(static_cast<std::byte>(0xcd));  // positions size placeholder
   uint32_t positions_size = 0;
   if (present_blk >= 0) positions_size += position_writer.put_uint(present_blk);
   if (present_ofs >= 0) {
     positions_size += position_writer.put_uint(present_ofs);
-    positions_size += position_writer.put_byte(0);  // run pos = 0
-    positions_size += position_writer.put_byte(0);  // bit pos = 0
+    positions_size += position_writer.put_byte(static_cast<std::byte>(0));  // run pos = 0
+    positions_size += position_writer.put_byte(static_cast<std::byte>(0));  // bit pos = 0
   }
   if (data_blk >= 0) { positions_size += position_writer.put_uint(data_blk); }
   if (data_ofs >= 0) {
     positions_size += position_writer.put_uint(data_ofs);
     if (kind != STRING && kind != FLOAT && kind != DOUBLE && kind != DECIMAL) {
       // RLE run pos always zero (assumes RLE aligned with row index boundaries)
-      positions_size += position_writer.put_byte(0);
+      positions_size += position_writer.put_byte(static_cast<std::byte>(0));
       if (kind == BOOLEAN) {
         // bit position in byte, always zero
-        positions_size += position_writer.put_byte(0);
+        positions_size += position_writer.put_byte(static_cast<std::byte>(0));
       }
     }
   }
@@ -243,11 +243,11 @@ void ProtobufWriter::put_row_index_entry(int32_t present_blk,
     if (data2_ofs >= 0) {
       positions_size += position_writer.put_uint(data2_ofs);
       // RLE run pos always zero (assumes RLE aligned with row index boundaries)
-      positions_size += position_writer.put_byte(0);
+      positions_size += position_writer.put_byte(static_cast<std::byte>(0));
     }
   }
   // size of the field 1
-  positions_data[positions_size_offset] = static_cast<uint8_t>(positions_size);
+  positions_data[positions_size_offset] = static_cast<std::byte>(positions_size);
 
   auto const stats_size = (stats == nullptr)
                             ? 0
@@ -258,7 +258,7 @@ void ProtobufWriter::put_row_index_entry(int32_t present_blk,
   // 1:RowIndex.entry
   put_uint(encode_field_number(1, ProtofType::FIXEDLEN));
   put_uint(entry_size);
-  put_bytes<uint8_t>(positions_data);
+  put_bytes(host_span<std::byte const>(positions_data));
 
   if (stats != nullptr) {
     put_uint(encode_field_number<decltype(*stats)>(2));  // 2: statistics
@@ -449,7 +449,7 @@ metadata::metadata(datasource* const src, rmm::cuda_stream_view stream) : source
   // Read uncompressed postscript section (max 255 bytes + 1 byte for length)
   auto buffer            = source->host_read(len - max_ps_size, max_ps_size);
   const size_t ps_length = buffer->data()[max_ps_size - 1];
-  const uint8_t* ps_data = &buffer->data()[max_ps_size - ps_length - 1];
+  auto ps_data = reinterpret_cast<std::byte const*>(&buffer->data()[max_ps_size - ps_length - 1]);
   ProtobufReader(ps_data, ps_length).read(ps);
   CUDF_EXPECTS(ps.footerLength + ps_length < len, "Invalid footer length");
 
@@ -460,14 +460,14 @@ metadata::metadata(datasource* const src, rmm::cuda_stream_view stream) : source
   // Read compressed filefooter section
   buffer             = source->host_read(len - ps_length - 1 - ps.footerLength, ps.footerLength);
   auto const ff_data = decompressor->decompress_blocks({buffer->data(), buffer->size()}, stream);
-  ProtobufReader(ff_data.data(), ff_data.size()).read(ff);
+  ProtobufReader(reinterpret_cast<std::byte const*>(ff_data.data()), ff_data.size()).read(ff);
   CUDF_EXPECTS(get_num_columns() > 0, "No columns found");
 
   // Read compressed metadata section
   buffer =
     source->host_read(len - ps_length - 1 - ps.footerLength - ps.metadataLength, ps.metadataLength);
   auto const md_data = decompressor->decompress_blocks({buffer->data(), buffer->size()}, stream);
-  orc::ProtobufReader(md_data.data(), md_data.size()).read(md);
+  orc::ProtobufReader(reinterpret_cast<std::byte const*>(md_data.data()), md_data.size()).read(md);
 
   init_parent_descriptors();
   init_column_names();

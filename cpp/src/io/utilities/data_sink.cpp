@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2022, NVIDIA CORPORATION.
+ * Copyright (c) 2020-2023, NVIDIA CORPORATION.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -45,11 +45,11 @@ class file_sink : public data_sink {
 
   virtual ~file_sink() { flush(); }
 
-  void host_write(void const* data, size_t size) override
+  void host_write(cudf::host_span<std::byte const> data) override
   {
     _output_stream.seekp(_bytes_written);
-    _output_stream.write(static_cast<char const*>(data), size);
-    _bytes_written += size;
+    _output_stream.write(reinterpret_cast<char const*>(data.data()), data.size());
+    _bytes_written += data.size();
   }
 
   void flush() override { _output_stream.flush(); }
@@ -103,14 +103,13 @@ class file_sink : public data_sink {
  */
 class host_buffer_sink : public data_sink {
  public:
-  explicit host_buffer_sink(std::vector<char>* buffer) : buffer_(buffer) {}
+  explicit host_buffer_sink(std::vector<std::byte>* buffer) : buffer_(buffer) {}
 
   virtual ~host_buffer_sink() { flush(); }
 
-  void host_write(void const* data, size_t size) override
+  void host_write(host_span<std::byte const> data) override
   {
-    auto char_array = static_cast<char const*>(data);
-    buffer_->insert(buffer_->end(), char_array, char_array + size);
+    buffer_->insert(buffer_->end(), data.begin(), data.end());
   }
 
   void flush() override {}
@@ -118,7 +117,7 @@ class host_buffer_sink : public data_sink {
   size_t bytes_written() override { return buffer_->size(); }
 
  private:
-  std::vector<char>* buffer_;
+  std::vector<std::byte>* buffer_;
 };
 
 /**
@@ -130,7 +129,7 @@ class void_sink : public data_sink {
 
   virtual ~void_sink() {}
 
-  void host_write(void const* data, size_t size) override { _bytes_written += size; }
+  void host_write(cudf::host_span<std::byte const> data) override { _bytes_written += data.size(); }
 
   [[nodiscard]] bool supports_device_write() const override { return true; }
 
@@ -161,7 +160,7 @@ class user_sink_wrapper : public data_sink {
 
   virtual ~user_sink_wrapper() {}
 
-  void host_write(void const* data, size_t size) override { user_sink->host_write(data, size); }
+  void host_write(cudf::host_span<std::byte const> data) override { user_sink->host_write(data); }
 
   [[nodiscard]] bool supports_device_write() const override
   {
@@ -197,7 +196,7 @@ std::unique_ptr<data_sink> data_sink::create(const std::string& filepath)
   return std::make_unique<file_sink>(filepath);
 }
 
-std::unique_ptr<data_sink> data_sink::create(std::vector<char>* buffer)
+std::unique_ptr<data_sink> data_sink::create(std::vector<std::byte>* buffer)
 {
   return std::make_unique<host_buffer_sink>(buffer);
 }

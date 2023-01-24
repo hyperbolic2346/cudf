@@ -279,14 +279,14 @@ raw_orc_statistics read_raw_orc_statistics(source_info const& src_info)
 
   // Get file-level statistics, statistics of each column of file
   for (auto const& stats : metadata.ff.statistics) {
-    result.file_stats.push_back(std::string(stats.cbegin(), stats.cend()));
+    result.file_stats.push_back(std::move(stats));
   }
 
   // Get stripe-level statistics
   for (auto const& stripes_stats : metadata.md.stripeStats) {
     result.stripes_stats.emplace_back();
     for (auto const& stats : stripes_stats.colStats) {
-      result.stripes_stats.back().push_back(std::string(stats.cbegin(), stats.cend()));
+      result.stripes_stats.back().push_back(std::move(stats));
     }
   }
 
@@ -325,9 +325,7 @@ parsed_orc_statistics read_parsed_orc_statistics(source_info const& src_info)
 
   auto parse_column_statistics = [](auto const& raw_col_stats) {
     orc::column_statistics stats_internal;
-    orc::ProtobufReader(reinterpret_cast<const uint8_t*>(raw_col_stats.c_str()),
-                        raw_col_stats.size())
-      .read(stats_internal);
+    orc::ProtobufReader(raw_col_stats.data(), raw_col_stats.size()).read(stats_internal);
     return column_statistics(std::move(stats_internal));
   };
 

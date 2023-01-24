@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2021-2022, NVIDIA CORPORATION.
+ * Copyright (c) 2021-2023, NVIDIA CORPORATION.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -238,7 +238,7 @@ std::vector<metadata::stripe_source_mapping> aggregate_orc_metadata::select_stri
           per_file_metadata[mapping.source_idx].source->host_read(sf_comp_offset, sf_comp_length);
         auto sf_data = per_file_metadata[mapping.source_idx].decompressor->decompress_blocks(
           {buffer->data(), buffer->size()}, stream);
-        ProtobufReader(sf_data.data(), sf_data.size())
+        ProtobufReader(reinterpret_cast<std::byte const*>(sf_data.data()), sf_data.size())
           .read(per_file_metadata[mapping.source_idx].stripefooters[i]);
         mapping.stripe_info[i].second = &per_file_metadata[mapping.source_idx].stripefooters[i];
         if (stripe->indexLength == 0) { row_grp_idx_present = false; }

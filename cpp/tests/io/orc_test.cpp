@@ -591,16 +591,14 @@ TEST_F(OrcWriterTest, HostBuffer)
   cudf::io::table_input_metadata expected_metadata(expected);
   expected_metadata.column_metadata[0].set_name("col_other");
 
-  std::vector<char> out_buffer;
+  std::vector<std::byte> out_buffer;
   cudf::io::orc_writer_options out_opts =
     cudf::io::orc_writer_options::builder(cudf::io::sink_info(&out_buffer), expected)
       .metadata(&expected_metadata);
   cudf::io::write_orc(out_opts);
 
   cudf::io::orc_reader_options in_opts =
-    cudf::io::orc_reader_options::builder(
-      cudf::io::source_info(out_buffer.data(), out_buffer.size()))
-      .use_index(false);
+    cudf::io::orc_reader_options::builder(cudf::io::source_info(out_buffer)).use_index(false);
   const auto result = cudf::io::read_orc(in_opts);
 
   CUDF_TEST_EXPECT_TABLES_EQUAL(expected, result.tbl->view());
@@ -1122,7 +1120,7 @@ TEST_F(OrcReaderTest, zstdCompressionRegression)
     0x30, 0x09, 0x82, 0xf4, 0x03, 0x03, 0x4f, 0x52, 0x43, 0x17};
 
   auto source =
-    cudf::io::source_info(reinterpret_cast<const char*>(input_buffer), sizeof(input_buffer));
+    cudf::io::source_info({reinterpret_cast<std::byte const*>(input_buffer), sizeof(input_buffer)});
   cudf::io::orc_reader_options in_opts =
     cudf::io::orc_reader_options::builder(source).use_index(false);
 
@@ -1310,7 +1308,7 @@ TEST_F(OrcStatisticsTest, HasNull)
   };
 
   auto const stats = cudf::io::read_parsed_orc_statistics(
-    cudf::io::source_info{reinterpret_cast<char const*>(nulls_orc.data()), nulls_orc.size()});
+    cudf::io::source_info{{reinterpret_cast<std::byte*>(nulls_orc.data()), nulls_orc.size()}});
 
   EXPECT_EQ(stats.file_stats[1].has_null, true);
   EXPECT_EQ(stats.file_stats[2].has_null, false);
@@ -1338,24 +1336,21 @@ TEST_P(OrcWriterTestStripes, StripeSize)
   cols.push_back(col.release());
   const auto expected = std::make_unique<table>(std::move(cols));
 
-  auto validate = [&](std::vector<char> const& orc_buffer) {
+  auto validate = [&](std::vector<std::byte> const& orc_buffer) {
     auto const expected_stripe_num =
       std::max<cudf::size_type>(num_rows / size_rows, (num_rows * sizeof(int64_t)) / size_bytes);
-    auto const stats = cudf::io::read_parsed_orc_statistics(
-      cudf::io::source_info(orc_buffer.data(), orc_buffer.size()));
+    auto const stats = cudf::io::read_parsed_orc_statistics(cudf::io::source_info(orc_buffer));
     EXPECT_EQ(stats.stripes_stats.size(), expected_stripe_num);
 
     cudf::io::orc_reader_options in_opts =
-      cudf::io::orc_reader_options::builder(
-        cudf::io::source_info(orc_buffer.data(), orc_buffer.size()))
-        .use_index(false);
+      cudf::io::orc_reader_options::builder(cudf::io::source_info(orc_buffer)).use_index(false);
     auto result = cudf::io::read_orc(in_opts);
 
     CUDF_TEST_EXPECT_TABLES_EQUAL(expected->view(), result.tbl->view());
   };
 
   {
-    std::vector<char> out_buffer_chunked;
+    std::vector<std::byte> out_buffer_chunked;
     cudf::io::chunked_orc_writer_options opts =
       cudf::io::chunked_orc_writer_options::builder(cudf::io::sink_info(&out_buffer_chunked))
         .stripe_size_rows(size_rows)
@@ -1364,7 +1359,7 @@ TEST_P(OrcWriterTestStripes, StripeSize)
     validate(out_buffer_chunked);
   }
   {
-    std::vector<char> out_buffer;
+    std::vector<std::byte> out_buffer;
     cudf::io::orc_writer_options out_opts =
       cudf::io::orc_writer_options::builder(cudf::io::sink_info(&out_buffer), expected->view())
         .stripe_size_rows(size_rows)
@@ -1387,7 +1382,7 @@ INSTANTIATE_TEST_CASE_P(OrcWriterTest,
 TEST_F(OrcWriterTest, StripeSizeInvalid)
 {
   const auto unused_table = std::make_unique<table>();
-  std::vector<char> out_buffer;
+  std::vector<std::byte> out_buffer;
 
   EXPECT_THROW(
     cudf::io::orc_writer_options::builder(cudf::io::sink_info(&out_buffer), unused_table->view())
@@ -1574,15 +1569,13 @@ TEST_F(OrcReaderTest, EmptyColumnsParam)
   srand(31337);
   auto const expected = create_random_fixed_table<int>(2, 4, false);
 
-  std::vector<char> out_buffer;
+  std::vector<std::byte> out_buffer;
   cudf::io::orc_writer_options args =
     cudf::io::orc_writer_options::builder(cudf::io::sink_info{&out_buffer}, *expected);
   cudf::io::write_orc(args);
 
   cudf::io::orc_reader_options read_opts =
-    cudf::io::orc_reader_options::builder(
-      cudf::io::source_info{out_buffer.data(), out_buffer.size()})
-      .columns({});
+    cudf::io::orc_reader_options::builder(cudf::io::source_info{out_buffer}).columns({});
   auto const result = cudf::io::read_orc(read_opts);
 
   EXPECT_EQ(result.tbl->num_columns(), 0);

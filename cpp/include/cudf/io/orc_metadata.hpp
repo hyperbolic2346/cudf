@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019-2022, NVIDIA CORPORATION.
+ * Copyright (c) 2019-2023, NVIDIA CORPORATION.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -41,9 +41,10 @@ namespace io {
  * contains one element per stripe, where each element contains column statistics for each column.
  */
 struct raw_orc_statistics {
-  std::vector<std::string> column_names;                ///< Column names
-  std::vector<std::string> file_stats;                  ///< File-level statistics for each column
-  std::vector<std::vector<std::string>> stripes_stats;  ///< Stripe-level statistics for each column
+  std::vector<std::string> column_names;           ///< Column names
+  std::vector<std::vector<std::byte>> file_stats;  ///< File-level statistics for each column
+  std::vector<std::vector<std::vector<std::byte>>>
+    stripes_stats;  ///< Stripe-level statistics for each column
 };
 
 /**

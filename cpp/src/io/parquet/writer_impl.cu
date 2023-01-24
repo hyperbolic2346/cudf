@@ -1339,8 +1339,9 @@ void writer::impl::init_state()
   // Write file header
   file_header_s fhdr;
   fhdr.magic = parquet_magic;
+  host_span<std::byte> const h_bytes{reinterpret_cast<std::byte*>(&fhdr), sizeof(fhdr)};
   for (auto& sink : out_sink_) {
-    sink->host_write(&fhdr, sizeof(fhdr));
+    sink->host_write(h_bytes);
   }
   std::fill_n(current_chunk_offset.begin(), current_chunk_offset.size(), sizeof(file_header_s));
 }
@@ -1753,7 +1754,8 @@ void writer::impl::write(table_view const& table, std::vector<partition_info> co
                                         cudaMemcpyDefault,
                                         stream.value()));
           stream.synchronize();
-          out_sink_[p]->host_write(host_bfr.get() + ck.ck_stat_size, ck.compressed_size);
+          out_sink_[p]->host_write(
+            {reinterpret_cast<std::byte*>(host_bfr.get() + ck.ck_stat_size), ck.compressed_size});
           if (ck.ck_stat_size != 0) {
             column_chunk_meta.statistics_blob.resize(ck.ck_stat_size);
             memcpy(column_chunk_meta.statistics_blob.data(), host_bfr.get(), ck.ck_stat_size);
@@ -1849,7 +1851,8 @@ std::unique_ptr<std::vector<uint8_t>> writer::impl::close(
           auto const& index     = fmd.column_indexes[chunkidx++];
           c.column_index_offset = out_sink_[p]->bytes_written();
           c.column_index_length = index.size();
-          out_sink_[p]->host_write(index.data(), index.size());
+          out_sink_[p]->host_write(
+            {reinterpret_cast<std::byte const*>(index.data()), index.size()});
         }
       }
 
@@ -1862,7 +1865,8 @@ std::unique_ptr<std::vector<uint8_t>> writer::impl::close(
           int32_t len           = cpw.write(offsets);
           c.offset_index_offset = out_sink_[p]->bytes_written();
           c.offset_index_length = len;
-          out_sink_[p]->host_write(buffer.data(), buffer.size());
+          out_sink_[p]->host_write(
+            {reinterpret_cast<std::byte const*>(buffer.data()), buffer.size()});
         }
       }
     }
@@ -1870,8 +1874,8 @@ std::unique_ptr<std::vector<uint8_t>> writer::impl::close(
     buffer.resize(0);
     fendr.footer_len = static_cast<uint32_t>(cpw.write(md->get_metadata(p)));
     fendr.magic      = parquet_magic;
-    out_sink_[p]->host_write(buffer.data(), buffer.size());
-    out_sink_[p]->host_write(&fendr, sizeof(fendr));
+    out_sink_[p]->host_write({reinterpret_cast<std::byte const*>(buffer.data()), buffer.size()});
+    out_sink_[p]->host_write({reinterpret_cast<std::byte const*>(&fendr), sizeof(fendr)});
     out_sink_[p]->flush();
   }
 

@@ -1100,7 +1100,7 @@ TEST_F(ParquetWriterTest, BufferSource)
   cudf::io::table_input_metadata expected_metadata(expected);
   expected_metadata.column_metadata[0].set_name("col_other");
 
-  std::vector<char> out_buffer;
+  std::vector<std::byte> out_buffer;
   cudf::io::parquet_writer_options out_opts =
     cudf::io::parquet_writer_options::builder(cudf::io::sink_info(&out_buffer), expected)
       .metadata(&expected_metadata);
@@ -1109,7 +1109,7 @@ TEST_F(ParquetWriterTest, BufferSource)
   // host buffer
   {
     cudf::io::parquet_reader_options in_opts = cudf::io::parquet_reader_options::builder(
-      cudf::io::source_info(out_buffer.data(), out_buffer.size()));
+      cudf::io::source_info(out_buffer));
     const auto result = cudf::io::read_parquet(in_opts);
 
     CUDF_TEST_EXPECT_TABLES_EQUAL(expected, result.tbl->view());
@@ -1346,9 +1346,9 @@ class custom_test_data_sink : public cudf::io::data_sink {
 
   virtual ~custom_test_data_sink() { flush(); }
 
-  void host_write(void const* data, size_t size) override
+  void host_write(cudf::host_span<std::byte const> data) override
   {
-    outfile_.write(static_cast<char const*>(data), size);
+    outfile_.write(reinterpret_cast<char const*>(data.data()), data.size());
   }
 
   [[nodiscard]] bool supports_device_write() const override { return true; }
@@ -1396,7 +1396,7 @@ TEST_F(ParquetWriterTest, CustomDataSink)
   }
 
   // write out using a memmapped sink
-  std::vector<char> buf_sink;
+  std::vector<std::byte> buf_sink;
   {
     cudf::io::parquet_writer_options args =
       cudf::io::parquet_writer_options::builder(cudf::io::sink_info{&buf_sink}, *expected);
@@ -1410,8 +1410,8 @@ TEST_F(ParquetWriterTest, CustomDataSink)
   auto custom_tbl = cudf::io::read_parquet(custom_args);
   CUDF_TEST_EXPECT_TABLES_EQUAL(custom_tbl.tbl->view(), expected->view());
 
-  cudf::io::parquet_reader_options buf_args = cudf::io::parquet_reader_options::builder(
-    cudf::io::source_info{buf_sink.data(), buf_sink.size()});
+  cudf::io::parquet_reader_options buf_args =
+    cudf::io::parquet_reader_options::builder(cudf::io::source_info{buf_sink});
   auto buf_tbl = cudf::io::read_parquet(buf_args);
   CUDF_TEST_EXPECT_TABLES_EQUAL(buf_tbl.tbl->view(), expected->view());
 }
@@ -2403,14 +2403,14 @@ TYPED_TEST(ParquetChunkedWriterNumericTypeTest, UnalignedSize2)
 template <bool supports_device_writes>
 class custom_test_memmap_sink : public cudf::io::data_sink {
  public:
-  explicit custom_test_memmap_sink(std::vector<char>* mm_writer_buf)
+  explicit custom_test_memmap_sink(std::vector<std::byte>* mm_writer_buf)
   {
     mm_writer = cudf::io::data_sink::create(mm_writer_buf);
   }
 
   virtual ~custom_test_memmap_sink() { mm_writer->flush(); }
 
-  void host_write(void const* data, size_t size) override { mm_writer->host_write(data, size); }
+  void host_write(cudf::host_span<std::byte const> data) override { mm_writer->host_write(data); }
 
   [[nodiscard]] bool supports_device_write() const override { return supports_device_writes; }
 
@@ -2424,11 +2424,11 @@ class custom_test_memmap_sink : public cudf::io::data_sink {
                                        rmm::cuda_stream_view stream) override
   {
     return std::async(std::launch::deferred, [=] {
-      char* ptr = nullptr;
+      std::byte* ptr = nullptr;
       CUDF_CUDA_TRY(cudaMallocHost(&ptr, size));
       CUDF_CUDA_TRY(cudaMemcpyAsync(ptr, gpu_data, size, cudaMemcpyDefault, stream.value()));
       stream.synchronize();
-      mm_writer->host_write(ptr, size);
+      mm_writer->host_write({ptr, size});
       CUDF_CUDA_TRY(cudaFreeHost(ptr));
     });
   }
@@ -2443,7 +2443,7 @@ class custom_test_memmap_sink : public cudf::io::data_sink {
 
 TEST_F(ParquetWriterStressTest, LargeTableWeakCompression)
 {
-  std::vector<char> mm_buf;
+  std::vector<std::byte> mm_buf;
   mm_buf.reserve(4 * 1024 * 1024 * 16);
   custom_test_memmap_sink<false> custom_sink(&mm_buf);
 
@@ -2457,14 +2457,14 @@ TEST_F(ParquetWriterStressTest, LargeTableWeakCompression)
   cudf::io::write_parquet(args);
 
   cudf::io::parquet_reader_options custom_args =
-    cudf::io::parquet_reader_options::builder(cudf::io::source_info{mm_buf.data(), mm_buf.size()});
+    cudf::io::parquet_reader_options::builder(cudf::io::source_info{mm_buf});
   auto custom_tbl = cudf::io::read_parquet(custom_args);
   CUDF_TEST_EXPECT_TABLES_EQUAL(custom_tbl.tbl->view(), expected->view());
 }
 
 TEST_F(ParquetWriterStressTest, LargeTableGoodCompression)
 {
-  std::vector<char> mm_buf;
+  std::vector<std::byte> mm_buf;
   mm_buf.reserve(4 * 1024 * 1024 * 16);
   custom_test_memmap_sink<false> custom_sink(&mm_buf);
 
@@ -2478,14 +2478,14 @@ TEST_F(ParquetWriterStressTest, LargeTableGoodCompression)
   cudf::io::write_parquet(args);
 
   cudf::io::parquet_reader_options custom_args =
-    cudf::io::parquet_reader_options::builder(cudf::io::source_info{mm_buf.data(), mm_buf.size()});
+    cudf::io::parquet_reader_options::builder(cudf::io::source_info{mm_buf});
   auto custom_tbl = cudf::io::read_parquet(custom_args);
   CUDF_TEST_EXPECT_TABLES_EQUAL(custom_tbl.tbl->view(), expected->view());
 }
 
 TEST_F(ParquetWriterStressTest, LargeTableWithValids)
 {
-  std::vector<char> mm_buf;
+  std::vector<std::byte> mm_buf;
   mm_buf.reserve(4 * 1024 * 1024 * 16);
   custom_test_memmap_sink<false> custom_sink(&mm_buf);
 
@@ -2499,14 +2499,14 @@ TEST_F(ParquetWriterStressTest, LargeTableWithValids)
   cudf::io::write_parquet(args);
 
   cudf::io::parquet_reader_options custom_args =
-    cudf::io::parquet_reader_options::builder(cudf::io::source_info{mm_buf.data(), mm_buf.size()});
+    cudf::io::parquet_reader_options::builder(cudf::io::source_info{mm_buf});
   auto custom_tbl = cudf::io::read_parquet(custom_args);
   CUDF_TEST_EXPECT_TABLES_EQUAL(custom_tbl.tbl->view(), expected->view());
 }
 
 TEST_F(ParquetWriterStressTest, DeviceWriteLargeTableWeakCompression)
 {
-  std::vector<char> mm_buf;
+  std::vector<std::byte> mm_buf;
   mm_buf.reserve(4 * 1024 * 1024 * 16);
   custom_test_memmap_sink<true> custom_sink(&mm_buf);
 
@@ -2520,14 +2520,14 @@ TEST_F(ParquetWriterStressTest, DeviceWriteLargeTableWeakCompression)
   cudf::io::write_parquet(args);
 
   cudf::io::parquet_reader_options custom_args =
-    cudf::io::parquet_reader_options::builder(cudf::io::source_info{mm_buf.data(), mm_buf.size()});
+    cudf::io::parquet_reader_options::builder(cudf::io::source_info{mm_buf});
   auto custom_tbl = cudf::io::read_parquet(custom_args);
   CUDF_TEST_EXPECT_TABLES_EQUAL(custom_tbl.tbl->view(), expected->view());
 }
 
 TEST_F(ParquetWriterStressTest, DeviceWriteLargeTableGoodCompression)
 {
-  std::vector<char> mm_buf;
+  std::vector<std::byte> mm_buf;
   mm_buf.reserve(4 * 1024 * 1024 * 16);
   custom_test_memmap_sink<true> custom_sink(&mm_buf);
 
@@ -2541,14 +2541,14 @@ TEST_F(ParquetWriterStressTest, DeviceWriteLargeTableGoodCompression)
   cudf::io::write_parquet(args);
 
   cudf::io::parquet_reader_options custom_args =
-    cudf::io::parquet_reader_options::builder(cudf::io::source_info{mm_buf.data(), mm_buf.size()});
+    cudf::io::parquet_reader_options::builder(cudf::io::source_info{mm_buf});
   auto custom_tbl = cudf::io::read_parquet(custom_args);
   CUDF_TEST_EXPECT_TABLES_EQUAL(custom_tbl.tbl->view(), expected->view());
 }
 
 TEST_F(ParquetWriterStressTest, DeviceWriteLargeTableWithValids)
 {
-  std::vector<char> mm_buf;
+  std::vector<std::byte> mm_buf;
   mm_buf.reserve(4 * 1024 * 1024 * 16);
   custom_test_memmap_sink<true> custom_sink(&mm_buf);
 
@@ -2562,7 +2562,7 @@ TEST_F(ParquetWriterStressTest, DeviceWriteLargeTableWithValids)
   cudf::io::write_parquet(args);
 
   cudf::io::parquet_reader_options custom_args =
-    cudf::io::parquet_reader_options::builder(cudf::io::source_info{mm_buf.data(), mm_buf.size()});
+    cudf::io::parquet_reader_options::builder(cudf::io::source_info{mm_buf});
   auto custom_tbl = cudf::io::read_parquet(custom_args);
   CUDF_TEST_EXPECT_TABLES_EQUAL(custom_tbl.tbl->view(), expected->view());
 }
@@ -3264,8 +3264,9 @@ TEST_F(ParquetReaderTest, DecimalRead)
       0x00, 0x00, 0x00, 0xd3, 0x02, 0x00, 0x00, 0x50, 0x41, 0x52, 0x31};
     unsigned int decimals_parquet_len = 2366;
 
-    cudf::io::parquet_reader_options read_opts = cudf::io::parquet_reader_options::builder(
-      cudf::io::source_info{reinterpret_cast<const char*>(decimals_parquet), decimals_parquet_len});
+    cudf::io::parquet_reader_options read_opts =
+      cudf::io::parquet_reader_options::builder(cudf::io::source_info{
+        {reinterpret_cast<std::byte const*>(decimals_parquet), decimals_parquet_len}});
     auto result = cudf::io::read_parquet(read_opts);
 
     auto validity =
@@ -3409,7 +3410,7 @@ TEST_F(ParquetReaderTest, DecimalRead)
 
     cudf::io::parquet_reader_options read_opts =
       cudf::io::parquet_reader_options::builder(cudf::io::source_info{
-        reinterpret_cast<const char*>(fixed_len_bytes_decimal_parquet), parquet_len});
+        {reinterpret_cast<std::byte const*>(fixed_len_bytes_decimal_parquet), parquet_len}});
     auto result = cudf::io::read_parquet(read_opts);
     EXPECT_EQ(result.tbl->view().num_columns(), 3);
 
@@ -3521,7 +3522,7 @@ TEST_F(ParquetReaderTest, EmptyOutput)
 TEST_F(ParquetWriterTest, RowGroupSizeInvalid)
 {
   const auto unused_table = std::make_unique<table>();
-  std::vector<char> out_buffer;
+  std::vector<std::byte> out_buffer;
 
   EXPECT_THROW(cudf::io::parquet_writer_options::builder(cudf::io::sink_info(&out_buffer),
                                                          unused_table->view())
@@ -3564,7 +3565,7 @@ TEST_F(ParquetWriterTest, RowGroupSizeInvalid)
 TEST_F(ParquetWriterTest, RowGroupPageSizeMatch)
 {
   const auto unused_table = std::make_unique<table>();
-  std::vector<char> out_buffer;
+  std::vector<std::byte> out_buffer;
 
   auto options = cudf::io::parquet_writer_options::builder(cudf::io::sink_info(&out_buffer),
                                                            unused_table->view())
@@ -3579,7 +3580,7 @@ TEST_F(ParquetWriterTest, RowGroupPageSizeMatch)
 
 TEST_F(ParquetChunkedWriterTest, RowGroupPageSizeMatch)
 {
-  std::vector<char> out_buffer;
+  std::vector<std::byte> out_buffer;
 
   auto options = cudf::io::chunked_parquet_writer_options::builder(cudf::io::sink_info(&out_buffer))
                    .row_group_size_bytes(128 * 1024)
@@ -4591,15 +4592,13 @@ TEST_F(ParquetReaderTest, EmptyColumnsParam)
   srand(31337);
   auto const expected = create_random_fixed_table<int>(2, 4, false);
 
-  std::vector<char> out_buffer;
+  std::vector<std::byte> out_buffer;
   cudf::io::parquet_writer_options args =
     cudf::io::parquet_writer_options::builder(cudf::io::sink_info{&out_buffer}, *expected);
   cudf::io::write_parquet(args);
 
   cudf::io::parquet_reader_options read_opts =
-    cudf::io::parquet_reader_options::builder(
-      cudf::io::source_info{out_buffer.data(), out_buffer.size()})
-      .columns({});
+    cudf::io::parquet_reader_options::builder(cudf::io::source_info{out_buffer}).columns({});
   auto const result = cudf::io::read_parquet(read_opts);
 
   EXPECT_EQ(result.tbl->num_columns(), 0);

@@ -95,9 +95,10 @@ TEST_F(JsonReaderTest, ByteRange)
     { "a": { "y" : 6}, "b" : [7      ], "c": 14 })";
 
   // Initialize parsing options (reading json lines)
+  cudf::host_span<std::byte const> data(reinterpret_cast<std::byte const*>(json_string.c_str()),
+                                        json_string.size());
   cudf::io::json_reader_options json_lines_options =
-    cudf::io::json_reader_options::builder(
-      cudf::io::source_info{json_string.c_str(), json_string.size()})
+    cudf::io::json_reader_options::builder(cudf::io::source_info{data})
       .compression(cudf::io::compression_type::NONE)
       .lines(true);
 

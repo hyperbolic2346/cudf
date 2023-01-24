@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019-2022, NVIDIA CORPORATION.
+ * Copyright (c) 2019-2023, NVIDIA CORPORATION.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -419,7 +419,7 @@ class writer::impl {
    *
    * @param byte_vector Raw data (must include initial 3-byte header)
    */
-  void add_uncompressed_block_headers(std::vector<uint8_t>& byte_vector);
+  void add_uncompressed_block_headers(std::vector<std::byte>& byte_vector);
 
  private:
   rmm::mr::device_memory_resource* _mr = nullptr;
@@ -451,7 +451,7 @@ class writer::impl {
   // statistics data saved between calls to write before a close writes out the statistics
   persisted_statistics persisted_stripe_statistics;
 
-  std::vector<uint8_t> buffer_;
+  std::vector<std::byte> buffer_;
   std::unique_ptr<data_sink> out_sink_;
 };
 

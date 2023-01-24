@@ -1276,8 +1276,9 @@ writer::impl::intermediate_statistics writer::impl::gather_statistic_blobs(
 
     std::vector<ColStatsBlob> rowgroup_blobs(num_rowgroup_blobs);
     for (size_t i = 0; i < num_rowgroup_blobs; i++) {
-      auto const stat_begin = blobs.host_ptr(rowgroup_merge[i].start_chunk);
-      auto const stat_end   = stat_begin + rowgroup_merge[i].num_chunks;
+      auto const stat_begin =
+        reinterpret_cast<std::byte*>(blobs.host_ptr(rowgroup_merge[i].start_chunk));
+      auto const stat_end = stat_begin + rowgroup_merge[i].num_chunks;
       rowgroup_blobs[i].assign(stat_begin, stat_end);
     }
     return rowgroup_blobs;
@@ -1365,16 +1366,18 @@ writer::impl::encoded_footer_statistics writer::impl::finish_statistic_blobs(
 
   std::vector<ColStatsBlob> stripe_blobs(num_stripe_blobs);
   for (size_t i = 0; i < num_stripe_blobs; i++) {
-    auto const stat_begin = blobs.host_ptr(stripe_stat_merge[i].start_chunk);
-    auto const stat_end   = stat_begin + stripe_stat_merge[i].num_chunks;
+    auto const stat_begin =
+      reinterpret_cast<std::byte*>(blobs.host_ptr(stripe_stat_merge[i].start_chunk));
+    auto const stat_end = stat_begin + stripe_stat_merge[i].num_chunks;
     stripe_blobs[i].assign(stat_begin, stat_end);
   }
 
   std::vector<ColStatsBlob> file_blobs(num_file_blobs);
   auto file_stat_merge = stats_merge.host_ptr(num_stripe_blobs);
   for (auto i = 0u; i < num_file_blobs; i++) {
-    auto const stat_begin = blobs.host_ptr(file_stat_merge[i].start_chunk);
-    auto const stat_end   = stat_begin + file_stat_merge[i].num_chunks;
+    auto const stat_begin =
+      reinterpret_cast<std::byte*>(blobs.host_ptr(file_stat_merge[i].start_chunk));
+    auto const stat_end = stat_begin + file_stat_merge[i].num_chunks;
     file_blobs[i].assign(stat_begin, stat_end);
   }
 
@@ -1470,11 +1473,11 @@ void writer::impl::write_index_stream(int32_t stripe_id,
   (*streams)[stream_id].length = buffer_.size();
   if (compression_kind_ != NONE) {
     uint32_t uncomp_ix_len = (uint32_t)((*streams)[stream_id].length - 3) * 2 + 1;
-    buffer_[0]             = static_cast<uint8_t>(uncomp_ix_len >> 0);
-    buffer_[1]             = static_cast<uint8_t>(uncomp_ix_len >> 8);
-    buffer_[2]             = static_cast<uint8_t>(uncomp_ix_len >> 16);
+    buffer_[0]             = static_cast<std::byte>(uncomp_ix_len >> 0);
+    buffer_[1]             = static_cast<std::byte>(uncomp_ix_len >> 8);
+    buffer_[2]             = static_cast<std::byte>(uncomp_ix_len >> 16);
   }
-  out_sink_->host_write(buffer_.data(), buffer_.size());
+  out_sink_->host_write({buffer_.data(), buffer_.size()});
   stripe->indexLength += buffer_.size();
 }
 
@@ -1502,7 +1505,7 @@ std::future<void> writer::impl::write_data_stream(gpu::StripeStream const& strm_
         cudaMemcpyAsync(stream_out, stream_in, length, cudaMemcpyDefault, stream.value()));
       stream.synchronize();
 
-      out_sink_->host_write(stream_out, length);
+      out_sink_->host_write({reinterpret_cast<std::byte*>(stream_out), length});
       return std::async(std::launch::deferred, [] {});
     }
   }();
@@ -1510,23 +1513,25 @@ std::future<void> writer::impl::write_data_stream(gpu::StripeStream const& strm_
   return write_task;
 }
 
-void writer::impl::add_uncompressed_block_headers(std::vector<uint8_t>& v)
+void writer::impl::add_uncompressed_block_headers(std::vector<std::byte>& v)
 {
   if (compression_kind_ != NONE) {
-    size_t uncomp_len = v.size() - 3, pos = 0, block_len;
+    size_t uncomp_len = v.size() - 3;
+    size_t pos        = 0;
+    size_t block_len;
     while (uncomp_len > compression_blocksize_) {
       block_len  = compression_blocksize_ * 2 + 1;
-      v[pos + 0] = static_cast<uint8_t>(block_len >> 0);
-      v[pos + 1] = static_cast<uint8_t>(block_len >> 8);
-      v[pos + 2] = static_cast<uint8_t>(block_len >> 16);
+      v[pos + 0] = static_cast<std::byte>(block_len >> 0);
+      v[pos + 1] = static_cast<std::byte>(block_len >> 8);
+      v[pos + 2] = static_cast<std::byte>(block_len >> 16);
       pos += 3 + compression_blocksize_;
-      v.insert(v.begin() + pos, 3, 0);
+      v.insert(v.begin() + pos, 3, static_cast<std::byte>(0));
       uncomp_len -= compression_blocksize_;
     }
     block_len  = uncomp_len * 2 + 1;
-    v[pos + 0] = static_cast<uint8_t>(block_len >> 0);
-    v[pos + 1] = static_cast<uint8_t>(block_len >> 8);
-    v[pos + 2] = static_cast<uint8_t>(block_len >> 16);
+    v[pos + 0] = static_cast<std::byte>(block_len >> 0);
+    v[pos + 1] = static_cast<std::byte>(block_len >> 8);
+    v[pos + 2] = static_cast<std::byte>(block_len >> 16);
   }
 }
 
@@ -1579,7 +1584,7 @@ writer::impl::~impl() { close(); }
 void writer::impl::init_state()
 {
   // Write file header
-  out_sink_->host_write(MAGIC, std::strlen(MAGIC));
+  out_sink_->host_write({reinterpret_cast<std::byte const*>(MAGIC), std::strlen(MAGIC)});
 }
 
 void pushdown_lists_null_mask(orc_column_view const& col,
@@ -2310,11 +2315,11 @@ void writer::impl::write(table_view const& table)
       stripe.footerLength = buffer_.size();
       if (compression_kind_ != NONE) {
         uint32_t uncomp_sf_len = (stripe.footerLength - 3) * 2 + 1;
-        buffer_[0]             = static_cast<uint8_t>(uncomp_sf_len >> 0);
-        buffer_[1]             = static_cast<uint8_t>(uncomp_sf_len >> 8);
-        buffer_[2]             = static_cast<uint8_t>(uncomp_sf_len >> 16);
+        buffer_[0]             = static_cast<std::byte>(uncomp_sf_len >> 0);
+        buffer_[1]             = static_cast<std::byte>(uncomp_sf_len >> 8);
+        buffer_[2]             = static_cast<std::byte>(uncomp_sf_len >> 16);
       }
-      out_sink_->host_write(buffer_.data(), buffer_.size());
+      out_sink_->host_write({buffer_.data(), buffer_.size()});
     }
     for (auto const& task : write_tasks) {
       task.wait();
@@ -2421,7 +2426,7 @@ void writer::impl::close()
     pbw_.write(md);
     add_uncompressed_block_headers(buffer_);
     ps.metadataLength = buffer_.size();
-    out_sink_->host_write(buffer_.data(), buffer_.size());
+    out_sink_->host_write({buffer_.data(), buffer_.size()});
   } else {
     ps.metadataLength = 0;
   }
@@ -2435,9 +2440,9 @@ void writer::impl::close()
   ps.compressionBlockSize = compression_blocksize_;
   ps.version              = {0, 12};
   ps.magic                = MAGIC;
-  const auto ps_length    = static_cast<uint8_t>(pbw_.write(ps));
+  const auto ps_length    = static_cast<std::byte>(pbw_.write(ps));
   buffer_.push_back(ps_length);
-  out_sink_->host_write(buffer_.data(), buffer_.size());
+  out_sink_->host_write({buffer_.data(), buffer_.size()});
   out_sink_->flush();
 }
 
