@@ -1119,8 +1119,8 @@ TEST_F(OrcReaderTest, zstdCompressionRegression)
     0x9e, 0x75, 0x08, 0x2f, 0x10, 0x05, 0x18, 0x80, 0x80, 0x10, 0x22, 0x02, 0x00, 0x0c, 0x28, 0x00,
     0x30, 0x09, 0x82, 0xf4, 0x03, 0x03, 0x4f, 0x52, 0x43, 0x17};
 
-  auto source =
-    cudf::io::source_info({reinterpret_cast<std::byte const*>(input_buffer), sizeof(input_buffer)});
+  auto source = cudf::io::source_info(cudf::host_span<std::byte const>{
+    reinterpret_cast<std::byte const*>(input_buffer), sizeof(input_buffer)});
   cudf::io::orc_reader_options in_opts =
     cudf::io::orc_reader_options::builder(source).use_index(false);
 
@@ -1307,8 +1307,9 @@ TEST_F(OrcStatisticsTest, HasNull)
     0x4F, 0x52, 0x43, 0x17,
   };
 
-  auto const stats = cudf::io::read_parsed_orc_statistics(
-    cudf::io::source_info{{reinterpret_cast<std::byte*>(nulls_orc.data()), nulls_orc.size()}});
+  auto const stats =
+    cudf::io::read_parsed_orc_statistics(cudf::io::source_info{cudf::host_span<std::byte const>{
+      reinterpret_cast<std::byte*>(nulls_orc.data()), nulls_orc.size()}});
 
   EXPECT_EQ(stats.file_stats[1].has_null, true);
   EXPECT_EQ(stats.file_stats[2].has_null, false);

@@ -1108,8 +1108,8 @@ TEST_F(ParquetWriterTest, BufferSource)
 
   // host buffer
   {
-    cudf::io::parquet_reader_options in_opts = cudf::io::parquet_reader_options::builder(
-      cudf::io::source_info(out_buffer));
+    cudf::io::parquet_reader_options in_opts =
+      cudf::io::parquet_reader_options::builder(cudf::io::source_info(out_buffer));
     const auto result = cudf::io::read_parquet(in_opts);
 
     CUDF_TEST_EXPECT_TABLES_EQUAL(expected, result.tbl->view());
@@ -3264,9 +3264,9 @@ TEST_F(ParquetReaderTest, DecimalRead)
       0x00, 0x00, 0x00, 0xd3, 0x02, 0x00, 0x00, 0x50, 0x41, 0x52, 0x31};
     unsigned int decimals_parquet_len = 2366;
 
-    cudf::io::parquet_reader_options read_opts =
-      cudf::io::parquet_reader_options::builder(cudf::io::source_info{
-        {reinterpret_cast<std::byte const*>(decimals_parquet), decimals_parquet_len}});
+    cudf::io::parquet_reader_options read_opts = cudf::io::parquet_reader_options::builder(
+      cudf::io::source_info{cudf::host_span<std::byte const>{
+        reinterpret_cast<std::byte const*>(decimals_parquet), decimals_parquet_len}});
     auto result = cudf::io::read_parquet(read_opts);
 
     auto validity =
@@ -3408,9 +3408,9 @@ TEST_F(ParquetReaderTest, DecimalRead)
 
     unsigned int parquet_len = 1226;
 
-    cudf::io::parquet_reader_options read_opts =
-      cudf::io::parquet_reader_options::builder(cudf::io::source_info{
-        {reinterpret_cast<std::byte const*>(fixed_len_bytes_decimal_parquet), parquet_len}});
+    cudf::io::parquet_reader_options read_opts = cudf::io::parquet_reader_options::builder(
+      cudf::io::source_info{cudf::host_span<std::byte const>{
+        reinterpret_cast<std::byte const*>(fixed_len_bytes_decimal_parquet), parquet_len}});
     auto result = cudf::io::read_parquet(read_opts);
     EXPECT_EQ(result.tbl->view().num_columns(), 3);
 
