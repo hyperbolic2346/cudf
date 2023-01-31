@@ -262,6 +262,7 @@ class reader::impl {
   bool _strings_to_categorical = false;
   std::optional<std::vector<reader_column_schema>> _reader_column_schema;
   data_type _timestamp_type{type_id::EMPTY};
+  parquet_read_method _read_method{parquet_read_method::SINGLE_THREADED};
 
   std::mutex read_mutex;
   std::condition_variable read_cv;

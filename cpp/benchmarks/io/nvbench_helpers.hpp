@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2022, NVIDIA CORPORATION.
+ * Copyright (c) 2022-2023, NVIDIA CORPORATION.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -73,6 +73,19 @@ NVBENCH_DECLARE_ENUM_TYPE_STRINGS(
     switch (value) {
       case cudf::io::compression_type::SNAPPY: return "SNAPPY";
       case cudf::io::compression_type::NONE: return "NONE";
+      case cudf::io::compression_type::ZSTD: return "ZSTD";
+      default: return "Unknown";
+    }
+  },
+  [](auto) { return std::string{}; })
+
+NVBENCH_DECLARE_ENUM_TYPE_STRINGS(
+  cudf::io::parquet_read_method,
+  [](auto value) {
+    switch (value) {
+      case cudf::io::parquet_read_method::SINGLE_THREADED: return "SINGLE THREADED";
+      case cudf::io::parquet_read_method::THREAD_PER_STAGE: return "THREAD PER STAGE";
+      case cudf::io::parquet_read_method::THREAD_PER_STREAM: return "THREAD PER STREAM";
       default: return "Unknown";
     }
   },

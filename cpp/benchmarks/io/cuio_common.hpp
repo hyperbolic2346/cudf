@@ -22,6 +22,8 @@
 #include <cudf/io/datasource.hpp>
 #include <cudf/io/types.hpp>
 
+#define PINNED
+
 using cudf::io::io_type;
 
 #define RD_BENCHMARK_DEFINE_ALL_SOURCES(benchmark, name, type_or_group)                  \

@@ -54,6 +54,7 @@
 #include <numeric>
 #include <regex>
 //#include <nvToolsExtCudaRt.h>
+#include <cudf/detail/nvtx/ranges.hpp>
 
 namespace cudf {
 namespace io {
@@ -1013,15 +1014,19 @@ std::future<void> reader::impl::read_column_chunks(
     if (io_size != 0) {
       auto& source = _sources[chunk_source_map[chunk]];
       if (source->is_device_read_preferred(io_size)) {
-        auto buffer        = rmm::device_buffer(io_size, stream);
+        nvtxRangePushA("dr buffer");
+        auto buffer = rmm::device_buffer(io_size, stream);
+        nvtxRangePop();
         auto fut_read_size = source->device_read_async(
           io_offset, io_size, static_cast<uint8_t*>(buffer.data()), stream);
         read_tasks.emplace_back(std::move(fut_read_size));
         page_data[chunk] = datasource::buffer::create(std::move(buffer));
       } else {
         auto const buffer = source->host_read(io_offset, io_size);
-        page_data[chunk] =
-          datasource::buffer::create(rmm::device_buffer(buffer->data(), buffer->size(), stream));
+        nvtxRangePushA("hr buffer");
+        auto db = rmm::device_buffer(buffer->data(), buffer->size(), stream);
+        nvtxRangePop();
+        page_data[chunk] = datasource::buffer::create(std::move(db));
       }
       auto d_compdata = page_data[chunk]->data();
       do {
@@ -1146,7 +1151,9 @@ rmm::device_buffer reader::impl::decompress_page_data(
   }
 
   // Dispatch batches of pages to decompress for each codec
+  nvtxRangePushA("decomp alloc");
   rmm::device_buffer decomp_pages(total_decomp_size, stream);
+  nvtxRangePop();
 
   std::vector<device_span<uint8_t const>> comp_in;
   comp_in.reserve(num_comp_pages);
@@ -1274,7 +1281,9 @@ void reader::impl::allocate_nesting_info(hostdevice_vector<gpu::ColumnChunkDesc>
       return total + (per_page_nesting_info_size * chunk.num_data_pages);
     });
 
+  nvtxRangePushA("nesting alloc");
   page_nesting_info = hostdevice_vector<gpu::PageNestingInfo>{total_page_nesting_infos, stream};
+  nvtxRangePop();
 
   // retrieve from the gpu so we can update
   pages.device_to_host(stream, true);
@@ -1459,9 +1468,11 @@ void reader::impl::decode_page_data(hostdevice_vector<gpu::ColumnChunkDesc>& chu
   // In order to reduce the number of allocations of hostdevice_vector, we allocate a single vector
   // to store all per-chunk pointers to nested data/nullmask. `chunk_offsets[i]` will store the
   // offset into `chunk_nested_data`/`chunk_nested_valids` for the array of pointers for chunk `i`
+  nvtxRangePushA("decode alloc");
   auto chunk_nested_valids = hostdevice_vector<uint32_t*>(sum_max_depths, stream);
   auto chunk_nested_data   = hostdevice_vector<void*>(sum_max_depths, stream);
-  auto chunk_offsets       = std::vector<size_t>();
+  nvtxRangePop();
+  auto chunk_offsets = std::vector<size_t>();
 
   // Update chunks with pointers to column data.
   for (size_t c = 0, page_count = 0, str_ofs = 0, chunk_off = 0; c < chunks.size(); c++) {
@@ -1632,6 +1643,7 @@ reader::impl::impl(std::vector<std::unique_ptr<datasource>>&& sources,
 
   // Binary columns can be read as binary or strings
   _reader_column_schema = options.get_column_schema();
+  _read_method          = options.get_read_method();
 
   // Select only columns required by the options
   std::tie(_input_columns, _output_columns, _output_column_schemas) =
@@ -1702,7 +1714,9 @@ std::future<rowgroup_data> reader::impl::read_row_group(
   // Tracker for eventually deallocating compressed and uncompressed data
   std::vector<std::unique_ptr<datasource::buffer>> page_data(num_chunks);
 
+  nvtxRangePushA("chunk alloc");
   hostdevice_vector<gpu::ColumnChunkDesc> chunks(0, num_chunks, stream);
+  nvtxRangePop();
 
   // generate ColumnChunkDesc objects for everything to be decoded (all input columns)
   for (size_t i = 0; i < num_input_columns; ++i) {
@@ -1790,7 +1804,9 @@ rowgroup_decompress_data reader::impl::decompress_rowgroup(rowgroup_data&& data)
             -1};
   }
 
+  nvtxRangePushA("pages alloc");
   hostdevice_vector<gpu::PageInfo> pages(total_pages, total_pages, data.stream);
+  nvtxRangePop();
   rmm::device_buffer decomp_page_data;
 
   // decoding of column/page information
@@ -2030,11 +2046,8 @@ table_with_metadata reader::impl::read(size_type skip_rows,
       }
     }
 
-    enum METHOD { SINGLE_THREADED, THREAD_PER_STAGE, THREAD_PER_STREAM };
-    constexpr METHOD scheme = THREAD_PER_STREAM;
-
-    switch (scheme) {
-      case THREAD_PER_STAGE: {
+    switch (_read_method) {
+      case parquet_read_method::THREAD_PER_STAGE: {
         constexpr auto num_streams = 2;
 
         auto stream_pool = rmm::cuda_stream_pool(num_streams);
@@ -2080,8 +2093,8 @@ table_with_metadata reader::impl::read(size_type skip_rows,
         join_stream(streams, _stream);
         break;
       }
-      case THREAD_PER_STREAM: {
-        constexpr auto num_streams = 2;
+      case parquet_read_method::THREAD_PER_STREAM: {
+        constexpr auto num_streams = 8;
 
         auto stream_pool = rmm::cuda_stream_pool(num_streams);
         auto streams     = get_streams(num_streams, stream_pool);
@@ -2134,7 +2147,7 @@ table_with_metadata reader::impl::read(size_type skip_rows,
         join_stream(streams, _stream);
         break;
       }
-      case SINGLE_THREADED: {
+      case parquet_read_method::SINGLE_THREADED: {
         // spawn and wait on all reads
         spawn_reads_and_wait(selected_row_groups, num_rows, {_stream});
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2022, NVIDIA CORPORATION.
+ * Copyright (c) 2020-2023, NVIDIA CORPORATION.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -61,6 +61,8 @@ class parquet_reader_options {
   size_type _skip_rows = 0;
   // Number of rows to read; -1 is all
   size_type _num_rows = -1;
+
+  parquet_read_method _read_method;
 
   // Whether to store string data as categorical type
   bool _convert_strings_to_categories = false;
@@ -159,6 +161,8 @@ class parquet_reader_options {
    */
   [[nodiscard]] auto const& get_row_groups() const { return _row_groups; }
 
+  [[nodiscard]] auto const get_read_method() const { return _read_method; }
+
   /**
    * @brief Returns timestamp type used to cast timestamp columns.
    *
@@ -211,6 +215,8 @@ class parquet_reader_options {
   {
     _reader_column_schema = std::move(val);
   }
+
+  void set_read_method(parquet_read_method val) { _read_method = val; }
 
   /**
    * @brief Sets number of rows to skip.
@@ -362,6 +368,12 @@ class parquet_reader_options_builder {
   parquet_reader_options_builder& timestamp_type(data_type type)
   {
     options._timestamp_type = type;
+    return *this;
+  }
+
+  parquet_reader_options_builder& set_read_method(parquet_read_method val)
+  {
+    options.set_read_method(val);
     return *this;
   }
 

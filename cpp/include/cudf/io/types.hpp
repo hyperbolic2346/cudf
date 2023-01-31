@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2019-2022, NVIDIA CORPORATION.
+ * Copyright (c) 2019-2023, NVIDIA CORPORATION.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -98,6 +98,8 @@ enum statistics_freq {
   STATISTICS_PAGE     = 2,  ///< Per-page column statistics
   STATISTICS_COLUMN   = 3,  ///< Full column and offset indices. Implies STATISTICS_ROWGROUP
 };
+
+enum class parquet_read_method { SINGLE_THREADED, THREAD_PER_STAGE, THREAD_PER_STREAM };
 
 /**
  * @brief Detailed name information for output columns.

@@ -30,14 +30,17 @@
 constexpr size_t data_size         = (512 << 21) + (512 << 20);
 constexpr cudf::size_type num_cols = 64;
 
-void parquet_read_common(cudf::io::parquet_writer_options const& write_opts,
-                         cuio_source_sink_pair& source_sink,
-                         nvbench::state& state)
+void parquet_read_common(
+  cudf::io::parquet_writer_options const& write_opts,
+  cuio_source_sink_pair& source_sink,
+  nvbench::state& state,
+  cudf::io::parquet_read_method read_method = cudf::io::parquet_read_method::SINGLE_THREADED)
 {
   cudf::io::write_parquet(write_opts);
 
   cudf::io::parquet_reader_options read_opts =
-    cudf::io::parquet_reader_options::builder(source_sink.make_source_info());
+    cudf::io::parquet_reader_options::builder(source_sink.make_source_info())
+      .set_read_method(read_method);
 
   auto mem_stats_logger = cudf::memory_stats_logger();
   state.set_cuda_stream(nvbench::make_cuda_stream_view(cudf::get_default_stream().value()));
@@ -57,16 +60,24 @@ void parquet_read_common(cudf::io::parquet_writer_options const& write_opts,
   state.add_buffer_size(source_sink.size(), "encoded_file_size", "encoded_file_size");
 }
 
-template <data_type DataType>
-void BM_parquet_read_data(nvbench::state& state, nvbench::type_list<nvbench::enum_type<DataType>>)
+template <data_type DataType,
+          cudf::io::io_type IO,
+          cudf::io::compression_type Compression,
+          cudf::io::parquet_read_method ReadMethod>
+void BM_parquet_read_data(nvbench::state& state,
+                          nvbench::type_list<nvbench::enum_type<DataType>,
+                                             nvbench::enum_type<IO>,
+                                             nvbench::enum_type<Compression>,
+                                             nvbench::enum_type<ReadMethod>>)
 {
   cudf::rmm_pool_raii rmm_pool;
 
   auto const d_type                 = get_type_or_group(static_cast<int32_t>(DataType));
   cudf::size_type const cardinality = state.get_int64("cardinality");
   cudf::size_type const run_length  = state.get_int64("run_length");
-  auto const compression            = cudf::io::compression_type::SNAPPY;
-  auto const source_type            = io_type::HOST_BUFFER;
+  auto const compression            = Compression;
+  auto const source_type            = IO;
+  auto const read_method            = ReadMethod;
 
   auto const tbl =
     create_random_table(cycle_dtypes(d_type, num_cols),
@@ -79,7 +90,7 @@ void BM_parquet_read_data(nvbench::state& state, nvbench::type_list<nvbench::enu
     cudf::io::parquet_writer_options::builder(source_sink.make_sink_info(), view)
       .compression(compression);
 
-  parquet_read_common(write_opts, source_sink, state);
+  parquet_read_common(write_opts, source_sink, state, read_method);
 }
 
 template <cudf::io::io_type IO, cudf::io::compression_type Compression>
@@ -114,26 +125,32 @@ void BM_parquet_read_io_compression(
   parquet_read_common(write_opts, source_sink, state);
 }
 
-using d_type_list = nvbench::enum_type_list<data_type::INTEGRAL>; /*data_type::INTEGRAL,
-                                              data_type::FLOAT,
-                                              data_type::DECIMAL>,
-                                              data_type::TIMESTAMP,
-                                              data_type::DURATION>*/
+using d_type_list = nvbench::enum_type_list<data_type::INTEGRAL,
+                                            data_type::FLOAT,
+                                            data_type::DECIMAL,
+                                            data_type::TIMESTAMP,
+                                            data_type::DURATION>;
 
 using io_list =
   nvbench::enum_type_list<cudf::io::io_type::FILEPATH, cudf::io::io_type::HOST_BUFFER>;
 
-using compression_list =
-  nvbench::enum_type_list<cudf::io::compression_type::SNAPPY, cudf::io::compression_type::NONE>;
+using compression_list = nvbench::enum_type_list<cudf::io::compression_type::NONE,
+                                                 cudf::io::compression_type::SNAPPY,
+                                                 cudf::io::compression_type::ZSTD>;
 
-NVBENCH_BENCH_TYPES(BM_parquet_read_data, NVBENCH_TYPE_AXES(d_type_list))
+using read_method = nvbench::enum_type_list<cudf::io::parquet_read_method::SINGLE_THREADED,
+                                            cudf::io::parquet_read_method::THREAD_PER_STAGE,
+                                            cudf::io::parquet_read_method::THREAD_PER_STREAM>;
+
+NVBENCH_BENCH_TYPES(BM_parquet_read_data,
+                    NVBENCH_TYPE_AXES(d_type_list, io_list, compression_list, read_method))
   .set_name("parquet_read_decode")
-  .set_type_axes_names({"data_type"})
-  .set_run_once(true)
-  .add_int64_axis("cardinality", {0})
-  .add_int64_axis("run_length", {1});
-//  .add_int64_axis("cardinality", {0, 1000})
-//  .add_int64_axis("run_length", {1, 32});
+  .set_type_axes_names({"data_type", "io", "compression", "read_method"})
+  //  .set_run_once(true)
+  //  .add_int64_axis("cardinality", {0})
+  //  .add_int64_axis("run_length", {1});
+  .add_int64_axis("cardinality", {0, 1000})
+  .add_int64_axis("run_length", {1, 32});
 
 /*NVBENCH_BENCH_TYPES(BM_parquet_read_io_compression, NVBENCH_TYPE_AXES(io_list, compression_list))
   .set_name("parquet_read_io_compression")
