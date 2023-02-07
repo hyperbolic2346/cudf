@@ -109,13 +109,20 @@ class datasource {
                                             size_t offset = 0,
                                             size_t size   = 0);
 
+  template <typename T>
+  static std::unique_ptr<datasource> create(cudf::host_span<T const> buffer)
+  {
+    return create(cudf::host_span<std::byte const>(
+      reinterpret_cast<std::byte const*>(buffer.data()), buffer.size()));
+  }
+
   /**
    * @brief Creates a source from a host memory buffer.
    *
    * @param[in] buffer Host buffer object
    * @return Constructed datasource object
    */
-  static std::unique_ptr<datasource> create(host_buffer const& buffer);
+  static std::unique_ptr<datasource> create(host_buffer const buffer);
 
   /**
    * @brief Creates a source from a device memory buffer.

@@ -147,24 +147,22 @@ struct table_with_metadata {
   table_metadata metadata;     //!< Table metadata
 };
 
+using host_buffer = host_span<char const>;
+
 /**
- * @brief Non-owning view of a host memory buffer
+ * @brief Returns `true` if the type is byte-like, meaning it is reasonable to pass as a pointer to
+ * bytes.
  *
- * Used to describe buffer input in `source_info` objects.
+ * @tparam T The representation type
+ * @return `true` if the type is considered a byte-like type
  */
-struct host_buffer {
-  // TODO: to be replaced by `host_span`
-  char const* data = nullptr;  //!< Pointer to the buffer
-  size_t size      = 0;        //!< Size of the buffer
-  host_buffer()    = default;
-  /**
-   * @brief Construct a new host buffer object
-   *
-   * @param data Pointer to the buffer
-   * @param size Size of the buffer
-   */
-  host_buffer(const char* data, size_t size) : data(data), size(size) {}
-};
+template <typename T>
+constexpr inline auto is_byte_like_type()
+{
+  return cuda::std::is_same_v<T, int8_t> || cuda::std::is_same_v<T, char> ||
+         cuda::std::is_same_v<T, uint8_t> || cuda::std::is_same_v<T, unsigned char> ||
+         cuda::std::is_same_v<T, std::byte>;
+}
 
 /**
  * @brief Source information for read interfaces
@@ -193,8 +191,22 @@ struct source_info {
    *
    * @param host_buffers Input buffers in host memory
    */
-  explicit source_info(std::vector<host_buffer> const& host_buffers)
+  template <typename T, CUDF_ENABLE_IF(is_byte_like_type<T>())>
+  explicit source_info(std::vector<cudf::host_span<T const>> const& host_buffers)
     : _type(io_type::HOST_BUFFER), _host_buffers(host_buffers)
+  {
+  }
+
+  /**
+   * @brief Construct a new source info object for a single buffer
+   *
+   * @param host_data Input buffer in host memory
+   */
+  template <typename T, CUDF_ENABLE_IF(is_byte_like_type<T>())>
+  explicit source_info(cudf::host_span<T const> host_data)
+    : _type(io_type::HOST_BUFFER),
+      _host_buffers{cudf::host_span<std::byte const>(
+        reinterpret_cast<std::byte const*>(host_data.data()), host_data.size())}
   {
   }
 
@@ -204,8 +216,11 @@ struct source_info {
    * @param host_data Input buffer in host memory
    * @param size Size of the buffer
    */
-  explicit source_info(const char* host_data, size_t size)
-    : _type(io_type::HOST_BUFFER), _host_buffers({{host_data, size}})
+  template <typename T, CUDF_ENABLE_IF(is_byte_like_type<T>())>
+  explicit source_info(T const* host_data, size_t size)
+    : _type(io_type::HOST_BUFFER),
+      _host_buffers(
+        {cudf::host_span<std::byte const>(reinterpret_cast<std::byte const*>(host_data), size)})
   {
   }
 
@@ -289,7 +304,7 @@ struct source_info {
  private:
   io_type _type = io_type::FILEPATH;
   std::vector<std::string> _filepaths;
-  std::vector<host_buffer> _host_buffers;
+  std::vector<cudf::host_span<std::byte const>> _host_buffers;
   std::vector<cudf::device_span<std::byte const>> _device_buffers;
   std::vector<cudf::io::datasource*> _user_sources;
 };
