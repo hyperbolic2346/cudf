@@ -62,7 +62,7 @@ class parquet_reader_options {
   // Number of rows to read; -1 is all
   size_type _num_rows = -1;
 
-  parquet_read_method _read_method;
+  parquet_read_method _read_method{parquet_read_method::THREAD_PER_STREAM};
 
   // Whether to store string data as categorical type
   bool _convert_strings_to_categories = false;
