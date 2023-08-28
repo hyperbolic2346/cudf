@@ -116,13 +116,15 @@ void generate_depth_remappings(std::map<int, std::pair<std::vector<int>, std::ve
         auto cur_schema = md.get_schema(schema_idx);
         if (cur_schema.max_repetition_level == r) {
           // if this is a repeated field, map it one level deeper
-          shallowest = cur_schema.is_stub() ? cur_depth + 1 : cur_depth;
+          shallowest =
+            cur_schema.is_stub(md.get_schema(cur_schema.parent_idx)) ? cur_depth + 1 : cur_depth;
         }
         // if it's one-level encoding list
-        else if (cur_schema.is_one_level_list(md.get_schema(cur_schema.parent_idx))) {
+        else if (cur_schema.is_one_level_list(md.get_schema(cur_schema.parent_idx)) ||
+                 cur_schema.is_list_struct()) {
           shallowest = cur_depth - 1;
         }
-        if (!cur_schema.is_stub()) { cur_depth--; }
+        if (!cur_schema.is_stub(md.get_schema(cur_schema.parent_idx))) { cur_depth--; }
         schema_idx = cur_schema.parent_idx;
       }
       return shallowest;
@@ -140,8 +142,9 @@ void generate_depth_remappings(std::map<int, std::pair<std::vector<int>, std::ve
         SchemaElement cur_schema = md.get_schema(schema_idx);
         if (cur_schema.max_definition_level == d) {
           // if this is a repeated field, map it one level deeper
-          r1 = cur_schema.is_stub() ? prev_schema.max_repetition_level
-                                    : cur_schema.max_repetition_level;
+          r1 = cur_schema.is_stub(md.get_schema(cur_schema.parent_idx))
+                 ? prev_schema.max_repetition_level
+                 : cur_schema.max_repetition_level;
           break;
         }
         prev_schema = cur_schema;
@@ -156,10 +159,10 @@ void generate_depth_remappings(std::map<int, std::pair<std::vector<int>, std::ve
         SchemaElement cur_schema = md.get_schema(schema_idx);
         if (cur_schema.max_repetition_level == r1) {
           // if this is a repeated field, map it one level deeper
-          depth = cur_schema.is_stub() ? depth + 1 : depth;
+          depth = cur_schema.is_stub(md.get_schema(cur_schema.parent_idx)) ? depth + 1 : depth;
           break;
         }
-        if (!cur_schema.is_stub()) { depth--; }
+        if (!cur_schema.is_stub(md.get_schema(cur_schema.parent_idx))) { depth--; }
         prev_schema = cur_schema;
         schema_idx  = cur_schema.parent_idx;
       }
@@ -588,6 +591,13 @@ void reader::impl::allocate_nesting_info()
       auto const& schema                    = _metadata->get_schema(chunk.src_col_schema);
       auto const per_page_nesting_info_size = max(
         schema.max_definition_level + 1, _metadata->get_output_nesting_depth(chunk.src_col_schema));
+      printf(
+        " - checking schema %d(%s) and found %d per page nesting info size, which is max(%d, %d)\n",
+        chunk.src_col_schema,
+        schema.name.c_str(),
+        per_page_nesting_info_size,
+        schema.max_definition_level + 1,
+        _metadata->get_output_nesting_depth(chunk.src_col_schema));
       return total + (per_page_nesting_info_size * chunk.num_data_pages);
     });
 
@@ -642,15 +652,20 @@ void reader::impl::allocate_nesting_info()
     }
 
     // fill in host-side nesting info
-    int schema_idx  = src_col_schema;
+    int schema_idx = src_col_schema;
+    printf("starting with schema index %d\n", schema_idx);
     auto cur_schema = _metadata->get_schema(schema_idx);
     int cur_depth   = max_depth - 1;
     while (schema_idx > 0) {
       // stub columns (basically the inner field of a list scheme element) are not real columns.
       // we can ignore them for the purposes of output nesting info
-      if (!cur_schema.is_stub()) {
+      printf("checking schema index %d\n", schema_idx);
+      if (!cur_schema.is_stub(_metadata->get_schema(cur_schema.parent_idx))) {
         // initialize each page within the chunk
+        printf("initializing each page\n");
         for (int p_idx = 0; p_idx < chunks[idx].num_data_pages; p_idx++) {
+          printf("filling page nesting info at index %d\n",
+                 nesting_info_index + (p_idx * per_page_nesting_info_size));
           gpu::PageNestingInfo* pni =
             &page_nesting_info[nesting_info_index + (p_idx * per_page_nesting_info_size)];
 
@@ -673,6 +688,7 @@ void reader::impl::allocate_nesting_info()
             }
           }
 
+          printf("filling nesting info at depth %d\n", cur_depth);
           // values indexed by output column index
           nesting_info[cur_depth].max_def_level = cur_schema.max_definition_level;
           pni[cur_depth].size                   = 0;
@@ -758,6 +774,11 @@ std::pair<bool, std::vector<std::future<void>>> reader::impl::create_and_read_co
       // look up metadata
       auto& col_meta = _metadata->get_column_metadata(rg.index, rg.source_index, col.schema_idx);
       auto& schema   = _metadata->get_schema(col.schema_idx);
+
+      printf("checking column %lu, schema %s of converted type %d\n",
+             i,
+             schema.name.c_str(),
+             (int)schema.converted_type);
 
       auto [type_width, clock_rate, converted_type] =
         conversion_info(to_type_id(schema, _strings_to_categorical, _timestamp_type.id()),
@@ -1316,12 +1337,56 @@ struct get_page_nesting_size {
   {
     auto const indices = reduction_indices{index, max_depth, num_pages};
 
+    if (threadIdx.x == 0) {
+      for (int i = 0; i < num_pages; ++i) {
+        printf("page[%d] == src schema %d\n", i, pages[i].src_col_schema);
+      }
+    }
+    __syncthreads();
+
     auto const& page = pages[page_indices[indices.page_idx]];
+    if (page.src_col_schema != input_cols[indices.col_idx].schema_idx) {
+      printf("-=-=- Page %d -=-=-\n  page schema %d, but col schema %d!\n",
+             page_indices[indices.page_idx],
+             page.src_col_schema,
+             input_cols[indices.col_idx].schema_idx);
+    }
+
     if (page.src_col_schema != input_cols[indices.col_idx].schema_idx ||
         page.flags & gpu::PAGEINFO_FLAGS_DICTIONARY ||
         indices.depth_idx >= input_cols[indices.col_idx].nesting_depth) {
       return 0;
     }
+
+    printf(
+      "index %lu translates to %d depth_idx, %lu page_idx, %d col_idx from %d pages and %d max "
+      "depth\n"
+      " - page %d with schema %d and %d, depth %d and %d\n"
+      "  - %susing%s\n"
+      "  - batch size is %d\n",
+      index,
+      indices.depth_idx,
+      indices.page_idx,
+      indices.col_idx,
+      (int)num_pages,
+      max_depth,
+      page_indices[indices.page_idx],
+      page.src_col_schema,
+      input_cols[indices.col_idx].schema_idx,
+      indices.depth_idx,
+      input_cols[indices.col_idx].nesting_depth,
+
+      (page.src_col_schema != input_cols[indices.col_idx].schema_idx ||
+       page.flags & gpu::PAGEINFO_FLAGS_DICTIONARY ||
+       indices.depth_idx >= input_cols[indices.col_idx].nesting_depth)
+        ? "not "
+        : "",
+      (page.flags & gpu::PAGEINFO_FLAGS_DICTIONARY) ? " due to dictionary" : "",
+      (page.src_col_schema != input_cols[indices.col_idx].schema_idx ||
+       page.flags & gpu::PAGEINFO_FLAGS_DICTIONARY ||
+       indices.depth_idx >= input_cols[indices.col_idx].nesting_depth)
+        ? -1
+        : page.nesting[indices.depth_idx].batch_size);
 
     return page.nesting[indices.depth_idx].batch_size;
   }
@@ -1709,6 +1774,7 @@ void reader::impl::preprocess_pages(size_t skip_rows,
 
 void reader::impl::allocate_columns(size_t skip_rows, size_t num_rows, bool uses_custom_row_bounds)
 {
+  printf("allocating columns with %d skip rows, %d num rows\n", (int)skip_rows, (int)num_rows);
   auto const& chunks = _file_itm_data.chunks;
   auto& pages        = _file_itm_data.pages_info;
 
@@ -1733,6 +1799,16 @@ void reader::impl::allocate_columns(size_t skip_rows, size_t num_rows, bool uses
     // print_pages(pages, _stream);
   }
 
+  std::function<void(inline_column_buffer const&, int)> print_col =
+    [&](inline_column_buffer const& col, int depth) -> void {
+    for (int i = 0; i < depth; ++i)
+      printf("  ");
+    printf("col %s - %d\n", col.name.c_str(), (int)col.type.id());
+    for (int j = 0; j < (int)col.children.size(); ++j) {
+      print_col(col.children[j], depth + 1);
+    }
+  };
+
   // iterate over all input columns and allocate any associated output
   // buffers if they are not part of a list hierarchy. mark down
   // if we have any list columns that need further processing.
@@ -1746,9 +1822,13 @@ void reader::impl::allocate_columns(size_t skip_rows, size_t num_rows, bool uses
       auto& out_buf = (*cols)[input_col.nesting[l_idx]];
       cols          = &out_buf.children;
 
+      printf("  nesting level %d/%d:\n", (int)l_idx, (int)max_depth);
+      print_col(out_buf, 1);
+
       // if this has a list parent, we have to get column sizes from the
       // data computed during gpu::ComputePageSizes
       if (out_buf.user_data & PARQUET_COLUMN_BUFFER_FLAG_HAS_LIST_PARENT) {
+        printf("   ^-- has a list parent\n");
         has_lists = true;
       }
       // if we haven't already processed this column because it is part of a struct hierarchy
@@ -1765,6 +1845,17 @@ void reader::impl::allocate_columns(size_t skip_rows, size_t num_rows, bool uses
   // compute output column sizes by examining the pages of the -input- columns
   if (has_lists) {
     auto& page_index = _chunk_itm_data.page_index;
+
+    for (int i = 0; i < (int)_input_columns.size(); ++i) {
+      printf("input col %d: schema %d, name %s, has%s repetition\n",
+             i,
+             _input_columns[i].schema_idx,
+             _input_columns[i].name.c_str(),
+             _input_columns[i].has_repetition ? "" : " NO");
+      for (int j = 0; j < (int)_input_columns[i].nesting.size(); ++j) {
+        printf(" - Nesting[%d] == %d\n", j, _input_columns[i].nesting[j]);
+      }
+    }
 
     std::vector<input_col_info> h_cols_info;
     h_cols_info.reserve(_input_columns.size());
@@ -1816,6 +1907,9 @@ void reader::impl::allocate_columns(size_t skip_rows, size_t num_rows, bool uses
         pages.device_ptr(), page_index.begin(), 0, d_cols_info.data(), max_depth, pages.size()});
 
     sizes.device_to_host_sync(_stream);
+    for (int i = 0; i < (int)sizes.size(); ++i) {
+      printf("sizes[%d] == %lu\n", i, sizes[i]);
+    }
     for (size_type idx = 0; idx < static_cast<size_type>(_input_columns.size()); idx++) {
       auto const& input_col = _input_columns[idx];
       auto* cols            = &_output_buffers;
@@ -1829,10 +1923,20 @@ void reader::impl::allocate_columns(size_t skip_rows, size_t num_rows, bool uses
         // for struct columns, higher levels of the output columns are shared between input
         // columns. so don't compute any given level more than once.
         if ((out_buf.user_data & PARQUET_COLUMN_BUFFER_FLAG_HAS_LIST_PARENT) && out_buf.size == 0) {
+          printf("list parent and no size, so building...\n");
+          print_col(out_buf, 1);
           auto size = sizes[(idx * max_depth) + l_idx];
+          printf(" - size[%d] being used due to index %d, max depth %d, and l_idx %d\n",
+                 (int)(idx * max_depth) + l_idx,
+                 idx,
+                 max_depth,
+                 l_idx);
 
           // if this is a list column add 1 for non-leaf levels for the terminating offset
-          if (out_buf.type.id() == type_id::LIST && l_idx < max_depth) { size++; }
+          if (out_buf.type.id() == type_id::LIST && l_idx < max_depth) {
+            printf("adding one to size due to list\n");
+            size++;
+          }
 
           // allocate
           out_buf.create(size, _stream, _mr);

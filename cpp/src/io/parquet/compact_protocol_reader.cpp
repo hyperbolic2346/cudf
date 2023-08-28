@@ -339,6 +339,7 @@ bool CompactProtocolReader::InitSchema(FileMetaData* md)
       int parent = 0;  // root of schema
       for (auto const& path : column.meta_data.path_in_schema) {
         auto const it = [&] {
+          printf("looking for schema with parent %d and path %s\n", parent, path.c_str());
           // find_if starting at (current_schema_index + 1) and then wrapping
           auto schema = [&](auto const& e) { return e.parent_idx == parent && e.name == path; };
           auto mid    = md->schema.cbegin() + current_schema_index + 1;
@@ -348,8 +349,9 @@ bool CompactProtocolReader::InitSchema(FileMetaData* md)
         }();
         if (it == md->schema.cend()) return false;
         current_schema_index = std::distance(md->schema.cbegin(), it);
-        column.schema_idx    = current_schema_index;
-        parent               = current_schema_index;
+        printf("setting col %p to schema idx %d\n", &column, current_schema_index);
+        column.schema_idx = current_schema_index;
+        parent            = current_schema_index;
       }
     }
   }

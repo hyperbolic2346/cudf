@@ -65,6 +65,7 @@ struct row_group_info {
  */
 struct metadata : public FileMetaData {
   explicit metadata(datasource* source);
+  void sanitize_schema();
 };
 
 class aggregate_reader_metadata {
@@ -127,15 +128,30 @@ class aggregate_reader_metadata {
     auto& pfm = per_file_metadata[0];
     int depth = 0;
 
+    printf("get output nesting depth for schema %d:\n", schema_index);
+
     // walk upwards, skipping repeated fields
     while (schema_index > 0) {
       auto const& elm = pfm.schema[schema_index];
-      if (!elm.is_stub()) { depth++; }
+      printf(
+        " - schema element %d(%s) is type %d\n", schema_index, elm.name.c_str(), (int)elm.type);
+      if (!elm.is_stub(pfm.schema[elm.parent_idx])) {
+        printf("   - !stub\n");
+        depth++;
+      }
+      if (elm.is_list_struct()) {
+        printf("   - list struct\n");
+        depth++;
+      }
       // schema of one-level encoding list doesn't contain nesting information, so we need to
       // manually add an extra nesting level
-      if (elm.is_one_level_list(pfm.schema[elm.parent_idx])) { depth++; }
+      if (elm.is_one_level_list(pfm.schema[elm.parent_idx])) {
+        printf("   - one level list\n");
+        depth++;
+      }
       schema_index = elm.parent_idx;
     }
+    printf(" - total depth %d\n", depth);
     return depth;
   }
 
@@ -192,7 +208,7 @@ class aggregate_reader_metadata {
     select_columns(std::optional<std::vector<std::string>> const& use_names,
                    bool include_index,
                    bool strings_to_categorical,
-                   type_id timestamp_type_id) const;
+                   type_id timestamp_type_id);
 };
 
 }  // namespace cudf::io::detail::parquet

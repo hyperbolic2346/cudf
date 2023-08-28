@@ -152,7 +152,10 @@ type_id to_type_id(SchemaElement const& schema,
   }
 
   // is it simply a struct?
-  if (schema.is_struct()) { return type_id::STRUCT; }
+  if (schema.is_struct()) {
+    printf(" type id struct returned\n");
+    return type_id::STRUCT;
+  }
 
   // Physical storage type supported by Parquet; controls the on-disk storage
   // format in combination with the encoding type.
@@ -175,6 +178,117 @@ type_id to_type_id(SchemaElement const& schema,
   return type_id::EMPTY;
 }
 
+void metadata::sanitize_schema()
+{
+  // Parquet isn't very strict about incoming metadata. Lots of things can and should be inferred.
+  // There are also a lot of rules that simply aren't followed and are expected to be worked around.
+  // This step sanitizes the metadata to something that isn't ambiguous.
+  //
+  // Take, for example, the following schema:
+  //
+  //  required group field_id=-1 user {
+  //    required int32 field_id=-1 id;
+  //    optional group field_id=-1 phoneNumbers {
+  //      repeated group field_id=-1 phone {
+  //        required int64 field_id=-1 number;
+  //        optional binary field_id=-1 kind (String);
+  //      }
+  //    }
+  //  }
+  //
+  // This real-world example has no annotations telling us what is a list or a struct. On the
+  // surface this looks like a column of id's and a column of list<struct<int64, string>>, but this
+  // actually should be interprets as a struct<list<struct<int64, string>>>. The phoneNumbers field
+  // has to be a struct because it is a group with no repeated tag and we have no annotation. The
+  // repeated group is actually BOTH a struct due to the multiple children and a list due to
+  // repeated. Another real-world example is the dreaded one level list.
+  //
+  // repeated value_type name
+  //
+  // This represents a list of value_type objects even though there is no group field.
+  //
+  // This code attempts to make this less messy for the code that follows.
+
+  std::function<int(int, std::string)> print_node = [&](int idx, std::string prefix) {
+    auto& e = schema[idx];
+    printf(
+      "%sschema element %d(%s) type %d, converted type %d, repetition_type %d, num_children %d\n",
+      prefix.c_str(),
+      idx,
+      e.name.c_str(),
+      (int)e.type,
+      (int)e.converted_type,
+      (int)e.repetition_type,
+      (int)e.num_children);
+    idx++;
+    for (int i = 0; i < e.num_children; ++i) {
+      idx = print_node(idx, "  " + prefix);
+    }
+    return idx;
+  };
+
+  std::function<int(int)> process = [&](int schema_idx) {
+    if (schema_idx < 0) { return 0; }
+    auto& schema_elem = schema[schema_idx];
+    //    print_node(schema_idx, "");
+    // if this is unannotated list or struct, annotate it
+    if (schema_elem.type == UNDEFINED_TYPE) {
+      if (schema_elem.type == UNDEFINED_TYPE && schema_elem.num_children == 1 &&
+          schema_elem.repetition_type == REPEATED) {
+        printf("sanitized element %d to list - %s\n", schema_idx, schema_elem.name.c_str());
+        schema_elem.converted_type = LIST;
+      } else if (schema_elem.type == UNDEFINED_TYPE && schema_elem.repetition_type != REPEATED) {
+        printf("sanitized element %d to struct - %s\n", schema_idx, schema_elem.name.c_str());
+        //        schema_elem.converted_type = STRUCT;
+      } else if (schema_elem.type == UNDEFINED_TYPE && schema_elem.repetition_type == REPEATED &&
+                 schema_elem.num_children > 1) {
+        // This is a list of structs, so we need to add a need to both mark this as a list, but also
+        // add a struct child and move this element's children to the struct
+        printf("sanitized element %d to list_struct - %s\n", schema_idx, schema_elem.name.c_str());
+        schema_elem.converted_type = LIST;
+        SchemaElement struct_elem;
+        struct_elem.name            = "struct_node";
+        struct_elem.repetition_type = REQUIRED;
+        //        struct_elem.children_idx = std::move(schema_elem.children_idx);
+        //        schema_elem.children_idx = {schema.size()};
+        struct_elem.num_children = schema_elem.num_children;
+        schema_elem.num_children = 1;
+        schema.insert(schema.begin() + schema_idx + 1, std::move(struct_elem));
+        //        schema.push_back(std::move(struct_elem));
+        print_node(schema_idx, "changed to ");
+      }
+    }
+
+    schema_idx++;
+    // process children
+    for (int idx = 0; idx < schema_elem.num_children; idx++) {
+      schema_idx = process(schema_idx);
+    }
+
+    return schema_idx;
+  };
+
+  printf("initial layout:\n");
+  size_t idx = 0;
+  while (idx < schema.size()) {
+    idx = print_node(idx, "initial ");
+  }
+
+  size_t process_idx = 1;
+  // at this point children_idx isn't valid yet, so we use the locality of the
+  // elements. The first element after this one is the first child of this
+  // element or the sibling.
+  while (process_idx < schema.size()) {
+    process_idx = process(process_idx);
+  }
+
+  printf("final layout:\n");
+  idx = 0;
+  while (idx < schema.size()) {
+    idx = print_node(idx, "final ");
+  }
+}
+
 metadata::metadata(datasource* source)
 {
   constexpr auto header_len = sizeof(file_header_s);
@@ -194,6 +308,8 @@ metadata::metadata(datasource* source)
   auto const buffer = source->host_read(len - ender->footer_len - ender_len, ender->footer_len);
   CompactProtocolReader cp(buffer->data(), ender->footer_len);
   CUDF_EXPECTS(cp.read(this), "Cannot parse metadata");
+  //  printf("SANITIZE RUNNING\n");
+  //  sanitize_schema();
   CUDF_EXPECTS(cp.InitSchema(this), "Cannot initialize schema");
 }
 
@@ -291,6 +407,19 @@ ColumnChunkMetaData const& aggregate_reader_metadata::get_column_metadata(size_t
     std::find_if(per_file_metadata[src_idx].row_groups[row_group_index].columns.begin(),
                  per_file_metadata[src_idx].row_groups[row_group_index].columns.end(),
                  [schema_idx](ColumnChunk const& col) { return col.schema_idx == schema_idx; });
+
+  if (col == std::end(per_file_metadata[src_idx].row_groups[row_group_index].columns)) {
+    printf("Unable to find metadata for rgi %d, src idx %d, schema_idx %d\n",
+           row_group_index,
+           src_idx,
+           schema_idx);
+    printf("schema_idx == %d\n", schema_idx);
+    printf("get col metadata layout:\n");
+    for (auto& col : per_file_metadata[src_idx].row_groups[row_group_index].columns) {
+      printf("col schema idx %d\n", col.schema_idx);
+    }
+  }
+
   CUDF_EXPECTS(col != std::end(per_file_metadata[src_idx].row_groups[row_group_index].columns),
                "Found no metadata for schema index");
   return col->meta_data;
@@ -395,7 +524,7 @@ std::tuple<std::vector<input_column_info>,
 aggregate_reader_metadata::select_columns(std::optional<std::vector<std::string>> const& use_names,
                                           bool include_index,
                                           bool strings_to_categorical,
-                                          type_id timestamp_type_id) const
+                                          type_id timestamp_type_id)
 {
   auto find_schema_child = [&](SchemaElement const& schema_elem, std::string const& name) {
     auto const& col_schema_idx =
@@ -421,11 +550,12 @@ aggregate_reader_metadata::select_columns(std::optional<std::vector<std::string>
                        std::vector<inline_column_buffer>& out_col_array,
                        bool has_list_parent) {
       if (schema_idx < 0) { return false; }
+      printf("building idx %d\n", schema_idx);
       auto const& schema_elem = get_schema(schema_idx);
 
       // if schema_elem is a stub then it does not exist in the column_name_info and column_buffer
       // hierarchy. So continue on
-      if (schema_elem.is_stub()) {
+      if (schema_elem.is_stub(get_schema(schema_elem.parent_idx))) {
         // is this legit?
         CUDF_EXPECTS(schema_elem.num_children == 1, "Unexpected number of children for stub");
         auto child_col_name_info = (col_name_info) ? &col_name_info->children[0] : nullptr;
@@ -433,11 +563,25 @@ aggregate_reader_metadata::select_columns(std::optional<std::vector<std::string>
           child_col_name_info, schema_elem.children_idx[0], out_col_array, has_list_parent);
       }
 
+      printf("schema type %d, repetition %d, %d children\n",
+             (int)schema_elem.type,
+             (int)schema_elem.repetition_type,
+             (int)schema_elem.num_children);
+
+      auto const one_level_list = schema_elem.is_one_level_list(get_schema(schema_elem.parent_idx));
+      auto const list_struct    = schema_elem.is_list_struct();
+
       // if we're at the root, this is a new output column
-      auto const col_type = schema_elem.is_one_level_list(get_schema(schema_elem.parent_idx))
+      auto const col_type = one_level_list || list_struct
                               ? type_id::LIST
                               : to_type_id(schema_elem, strings_to_categorical, timestamp_type_id);
       auto const dtype    = to_data_type(col_type, schema_elem);
+
+      printf("one_Level_list %s, list_struct %s, col type is %d, dtype is %d\n",
+             one_level_list ? "true" : "false",
+             list_struct ? "true" : "false",
+             (int)col_type,
+             (int)dtype.id());
 
       inline_column_buffer output_col(dtype, schema_elem.repetition_type == OPTIONAL);
       if (has_list_parent) { output_col.user_data |= PARQUET_COLUMN_BUFFER_FLAG_HAS_LIST_PARENT; }
@@ -445,24 +589,62 @@ aggregate_reader_metadata::select_columns(std::optional<std::vector<std::string>
       nesting.push_back(static_cast<int>(out_col_array.size()));
       output_col.name = schema_elem.name;
 
+      auto push_column = [&output_col](data_type const dtype,
+                                       bool const is_list_or_parent_is_list,
+                                       bool const optional) {
+        inline_column_buffer element_col(dtype, optional);
+        if (is_list_or_parent_is_list) {
+          element_col.user_data |= PARQUET_COLUMN_BUFFER_FLAG_HAS_LIST_PARENT;
+        }
+        // TODO: not sure if we should assign a name or leave it blank
+        element_col.name = "element";
+
+        output_col.children.push_back(std::move(element_col));
+      };
+
+      // add struct
+      if (list_struct) {
+        nesting.push_back(static_cast<int>(output_col.children.size()));
+        push_column(to_data_type(type_id::STRUCT, schema_elem),
+                    true,
+                    schema_elem.repetition_type == OPTIONAL);
+
+        // we are injecting a definiiton level here, so update the schema
+        std::function<void(int)> inc_definition = [&](int schema_idx) {
+          if (schema_idx < 0) { return; }
+          printf("building idx %d\n", schema_idx);
+          SchemaElement& e = per_file_metadata[0].schema[schema_idx];
+          e.max_definition_level++;
+          for (int idx = 0; idx < e.num_children; idx++) {
+            inc_definition(e.children_idx[idx]);
+          }
+        };
+        // inc_definition(schema_idx);
+      }
+
       // build each child
       bool path_is_valid = false;
       if (col_name_info == nullptr or col_name_info->children.empty()) {
         // add all children of schema_elem.
         // At this point, we can no longer pass a col_name_info to build_column
         for (int idx = 0; idx < schema_elem.num_children; idx++) {
-          path_is_valid |= build_column(nullptr,
-                                        schema_elem.children_idx[idx],
-                                        output_col.children,
-                                        has_list_parent || col_type == type_id::LIST);
+          path_is_valid |= build_column(
+            nullptr,
+            schema_elem.children_idx[idx],
+            //                                       output_col.children,
+            //                                        has_list_parent || col_type == type_id::LIST);
+            list_struct ? output_col.children.back().children : output_col.children,
+            (!list_struct && (has_list_parent || col_type == type_id::LIST)));
         }
       } else {
         for (size_t idx = 0; idx < col_name_info->children.size(); idx++) {
           path_is_valid |=
             build_column(&col_name_info->children[idx],
                          find_schema_child(schema_elem, col_name_info->children[idx].name),
-                         output_col.children,
-                         has_list_parent || col_type == type_id::LIST);
+                         //                         output_col.children,
+                         //                         has_list_parent || col_type == type_id::LIST);
+                         list_struct ? output_col.children.back().children : output_col.children,
+                         (!list_struct && (has_list_parent || col_type == type_id::LIST)));
         }
       }
 
@@ -473,35 +655,37 @@ aggregate_reader_metadata::select_columns(std::optional<std::vector<std::string>
           input_column_info{schema_idx, schema_elem.name, schema_elem.max_repetition_level > 0});
 
         // set up child output column for one-level encoding list
-        if (schema_elem.is_one_level_list(get_schema(schema_elem.parent_idx))) {
+        if (one_level_list) {
           // determine the element data type
           auto const element_type =
             to_type_id(schema_elem, strings_to_categorical, timestamp_type_id);
           auto const element_dtype = to_data_type(element_type, schema_elem);
 
-          inline_column_buffer element_col(element_dtype, schema_elem.repetition_type == OPTIONAL);
-          if (has_list_parent || col_type == type_id::LIST) {
-            element_col.user_data |= PARQUET_COLUMN_BUFFER_FLAG_HAS_LIST_PARENT;
-          }
           // store the index of this element
           nesting.push_back(static_cast<int>(output_col.children.size()));
-          // TODO: not sure if we should assign a name or leave it blank
-          element_col.name = "element";
 
-          output_col.children.push_back(std::move(element_col));
+          push_column(element_dtype,
+                      has_list_parent || col_type == type_id::LIST,
+                      schema_elem.repetition_type == OPTIONAL);
         }
 
         std::copy(nesting.cbegin(), nesting.cend(), std::back_inserter(input_col.nesting));
 
         // pop off the extra nesting element.
-        if (schema_elem.is_one_level_list(get_schema(schema_elem.parent_idx))) {
-          nesting.pop_back();
-        }
+        if (one_level_list) { nesting.pop_back(); }
 
         path_is_valid = true;  // If we're able to reach leaf then path is valid
       }
 
-      if (path_is_valid) { out_col_array.push_back(std::move(output_col)); }
+      if (path_is_valid) {
+        if (list_struct) { nesting.pop_back(); }
+        printf("valid push of column %d to %p col %s - %d\n",
+               (int)out_col_array.size(),
+               &out_col_array,
+               output_col.name.c_str(),
+               (int)output_col.type.id());
+        out_col_array.push_back(std::move(output_col));
+      }
 
       nesting.pop_back();
       return path_is_valid;
@@ -640,6 +824,21 @@ aggregate_reader_metadata::select_columns(std::optional<std::vector<std::string>
     }
   }
 
+  std::function<void(inline_column_buffer const&, int)> print_col =
+    [&](inline_column_buffer const& col, int depth) -> void {
+    for (int i = 0; i < depth; ++i)
+      printf("  ");
+    printf("col %s - %d\n", col.name.c_str(), (int)col.type.id());
+    for (int j = 0; j < (int)col.children.size(); ++j) {
+      print_col(col.children[j], depth + 1);
+    }
+  };
+
+  printf("produced columns:\n");
+  for (int i = 0; i < (int)output_columns.size(); ++i) {
+    auto& col = output_columns[i];
+    print_col(col, 0);
+  }
   return std::make_tuple(
     std::move(input_columns), std::move(output_columns), std::move(output_column_schemas));
 }

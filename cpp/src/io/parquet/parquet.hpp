@@ -175,7 +175,10 @@ struct SchemaElement {
   //     required int32 num;
   //  };
   // }
-  [[nodiscard]] bool is_stub() const { return repetition_type == REPEATED && num_children == 1; }
+  [[nodiscard]] bool is_stub(SchemaElement const& parent) const
+  {
+    return repetition_type == REPEATED && num_children == 1 && parent.converted_type == LIST;
+  }
 
   // https://github.com/apache/parquet-cpp/blob/642da05/src/parquet/schema.h#L49-L50
   // One-level LIST encoding: Only allows required lists with required cells:
@@ -186,15 +189,41 @@ struct SchemaElement {
   }
 
   // returns true if the element is a list
-  [[nodiscard]] bool is_list() const { return converted_type == LIST; }
+  [[nodiscard]] bool is_list() const
+  {
+    if (type == UNDEFINED_TYPE && num_children == 1 && repetition_type == REPEATED) {
+      printf(" - saying %p is a list when I wouldn't before!\n", this);
+    }
+    if (converted_type == LIST ||
+        (type == UNDEFINED_TYPE && num_children == 1 && repetition_type == REPEATED)) {
+      printf("node %p is a list - %s\n", this, this->name.c_str());
+    }
+    return converted_type == LIST;  // || (type == UNDEFINED_TYPE && num_children == 1 &&
+                                    // repetition_type == REPEATED);
+    //           (type == UNDEFINED_TYPE && num_children == 1 && child.repetition_type == REPEATED);
+  }
 
   // in parquet terms, a group is a level of nesting in the schema. a group
   // can be a struct or a list
   [[nodiscard]] bool is_struct() const
   {
+    if (type == UNDEFINED_TYPE &&
+        // this assumption might be a little weak.
+        ((repetition_type != REPEATED))) {
+      printf("node %p is a struct! - %s\n", this, this->name.c_str());
+    }
     return type == UNDEFINED_TYPE &&
            // this assumption might be a little weak.
-           ((repetition_type != REPEATED) || (repetition_type == REPEATED && num_children == 2));
+           ((repetition_type !=
+             REPEATED) /* || (repetition_type == REPEATED && num_children > 1)*/);
+  }
+
+  [[nodiscard]] bool is_list_struct() const
+  {
+    if (type == UNDEFINED_TYPE && (repetition_type == REPEATED && num_children > 1)) {
+      printf("node %p is a list_struct - %s\n", this, this->name.c_str());
+    }
+    return type == UNDEFINED_TYPE && (repetition_type == REPEATED && num_children > 1);
   }
 };
 

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2020-2022, NVIDIA CORPORATION.
+ * Copyright (c) 2020-2023, NVIDIA CORPORATION.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -37,9 +37,14 @@ std::unique_ptr<cudf::column> make_structs_column(
   CUDF_EXPECTS(null_count <= 0 || !null_mask.is_empty(),
                "Struct column with nulls must be nullable.");
 
+  printf("building struct column with %d rows. Children have:\n", num_rows);
+
   CUDF_EXPECTS(std::all_of(child_columns.begin(),
                            child_columns.end(),
-                           [&](auto const& child_col) { return num_rows == child_col->size(); }),
+                           [&](auto const& child_col) {
+                             printf(" - child with %d rows\n", (int)child_col->size());
+                             return num_rows == child_col->size();
+                           }),
                "Child columns must have the same number of rows as the Struct column.");
 
   if (!null_mask.is_empty()) {
