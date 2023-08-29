@@ -158,8 +158,8 @@ std::unique_ptr<column> make_column(column_buffer_base<string_policy>& buffer,
 
   switch (buffer.type.id()) {
     case type_id::STRING:
-      printf("building string column\n");
       if (schema.value_or(reader_column_schema{}).is_enabled_convert_binary_to_strings()) {
+        printf(" - building string column\n");
         if (schema_info != nullptr) {
           schema_info->children.push_back(column_name_info{"offsets"});
           schema_info->children.push_back(column_name_info{"chars"});
@@ -171,6 +171,7 @@ std::unique_ptr<column> make_column(column_buffer_base<string_policy>& buffer,
         // resource that the calling code expected.
         return buffer.make_string_column(stream);
       } else {
+        printf(" - building string column with %d children\n", (int)string_col->size());
         // convert to binary
         auto const string_col = buffer.make_string_column(stream);
         auto const num_rows   = string_col->size();
@@ -199,7 +200,7 @@ std::unique_ptr<column> make_column(column_buffer_base<string_policy>& buffer,
       }
 
     case type_id::LIST: {
-      printf("building list column with %d offsets\n", (int)buffer.size);
+      printf(" - building list column with %d offsets\n", (int)buffer.size);
       // make offsets column
       auto offsets = std::make_unique<column>(
         data_type{type_id::INT32}, buffer.size, std::move(buffer._data), rmm::device_buffer{}, 0);
@@ -233,7 +234,7 @@ std::unique_ptr<column> make_column(column_buffer_base<string_policy>& buffer,
     } break;
 
     case type_id::STRUCT: {
-      printf("building struct column of size %d with %d children\n",
+      printf(" - building struct column of size %d with %d children\n",
              (int)buffer.size,
              (int)buffer.children.size());
       std::vector<std::unique_ptr<cudf::column>> output_children;
@@ -264,7 +265,7 @@ std::unique_ptr<column> make_column(column_buffer_base<string_policy>& buffer,
     } break;
 
     default: {
-      printf("building other column of size %d\n", buffer.size);
+      printf(" - building other column of size %d\n", buffer.size);
       return std::make_unique<column>(buffer.type,
                                       buffer.size,
                                       std::move(buffer._data),
