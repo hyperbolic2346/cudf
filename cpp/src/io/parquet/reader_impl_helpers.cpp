@@ -465,17 +465,6 @@ aggregate_reader_metadata::select_columns(std::optional<std::vector<std::string>
       if (list_struct) {
         nesting.push_back(static_cast<int>(output_col.children.size()));
         push_column(to_data_type(type_id::STRUCT, schema_elem), true, false);
-
-        // we are injecting a definiiton level here, so update the schema
-        std::function<void(int)> inc_definition = [&](int schema_idx) {
-          if (schema_idx < 0) { return; }
-          SchemaElement& e = per_file_metadata[0].schema[schema_idx];
-          e.max_definition_level++;
-          for (int idx = 0; idx < e.num_children; idx++) {
-            inc_definition(e.children_idx[idx]);
-          }
-        };
-        // inc_definition(schema_idx);
       }
 
       // build each child
