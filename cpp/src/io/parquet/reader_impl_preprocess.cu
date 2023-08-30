@@ -1318,8 +1318,8 @@ struct get_page_nesting_size {
   __device__ size_type operator()(size_t index) const
   {
     auto const indices = reduction_indices{index, max_depth, num_pages};
-    auto const& page   = pages[page_indices[indices.page_idx]];
 
+    auto const& page = pages[page_indices[indices.page_idx]];
     if (page.src_col_schema != input_cols[indices.col_idx].schema_idx ||
         page.flags & gpu::PAGEINFO_FLAGS_DICTIONARY ||
         indices.depth_idx >= input_cols[indices.col_idx].nesting_depth) {

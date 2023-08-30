@@ -291,7 +291,6 @@ ColumnChunkMetaData const& aggregate_reader_metadata::get_column_metadata(size_t
     std::find_if(per_file_metadata[src_idx].row_groups[row_group_index].columns.begin(),
                  per_file_metadata[src_idx].row_groups[row_group_index].columns.end(),
                  [schema_idx](ColumnChunk const& col) { return col.schema_idx == schema_idx; });
-
   CUDF_EXPECTS(col != std::end(per_file_metadata[src_idx].row_groups[row_group_index].columns),
                "Found no metadata for schema index");
   return col->meta_data;
@@ -396,7 +395,7 @@ std::tuple<std::vector<input_column_info>,
 aggregate_reader_metadata::select_columns(std::optional<std::vector<std::string>> const& use_names,
                                           bool include_index,
                                           bool strings_to_categorical,
-                                          type_id timestamp_type_id)
+                                          type_id timestamp_type_id) const
 {
   auto find_schema_child = [&](SchemaElement const& schema_elem, std::string const& name) {
     auto const& col_schema_idx =
@@ -485,21 +484,17 @@ aggregate_reader_metadata::select_columns(std::optional<std::vector<std::string>
         // add all children of schema_elem.
         // At this point, we can no longer pass a col_name_info to build_column
         for (int idx = 0; idx < schema_elem.num_children; idx++) {
-          path_is_valid |= build_column(
-            nullptr,
-            schema_elem.children_idx[idx],
-            //                                       output_col.children,
-            //                                        has_list_parent || col_type == type_id::LIST);
-            list_struct ? output_col.children.back().children : output_col.children,
-            (!list_struct && (has_list_parent || col_type == type_id::LIST)));
+          path_is_valid |=
+            build_column(nullptr,
+                         schema_elem.children_idx[idx],
+                         list_struct ? output_col.children.back().children : output_col.children,
+                         (!list_struct && (has_list_parent || col_type == type_id::LIST)));
         }
       } else {
         for (size_t idx = 0; idx < col_name_info->children.size(); idx++) {
           path_is_valid |=
             build_column(&col_name_info->children[idx],
                          find_schema_child(schema_elem, col_name_info->children[idx].name),
-                         //                         output_col.children,
-                         //                         has_list_parent || col_type == type_id::LIST);
                          list_struct ? output_col.children.back().children : output_col.children,
                          (!list_struct && (has_list_parent || col_type == type_id::LIST)));
         }
@@ -518,6 +513,10 @@ aggregate_reader_metadata::select_columns(std::optional<std::vector<std::string>
             to_type_id(schema_elem, strings_to_categorical, timestamp_type_id);
           auto const element_dtype = to_data_type(element_type, schema_elem);
 
+          inline_column_buffer element_col(element_dtype, schema_elem.repetition_type == OPTIONAL);
+          if (has_list_parent || col_type == type_id::LIST) {
+            element_col.user_data |= PARQUET_COLUMN_BUFFER_FLAG_HAS_LIST_PARENT;
+          }
           // store the index of this element
           nesting.push_back(static_cast<int>(output_col.children.size()));
 

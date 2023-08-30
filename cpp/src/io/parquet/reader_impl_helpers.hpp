@@ -65,7 +65,6 @@ struct row_group_info {
  */
 struct metadata : public FileMetaData {
   explicit metadata(datasource* source);
-  void sanitize_schema();
 };
 
 class aggregate_reader_metadata {
@@ -194,7 +193,7 @@ class aggregate_reader_metadata {
     select_columns(std::optional<std::vector<std::string>> const& use_names,
                    bool include_index,
                    bool strings_to_categorical,
-                   type_id timestamp_type_id);
+                   type_id timestamp_type_id) const;
 };
 
 }  // namespace cudf::io::detail::parquet

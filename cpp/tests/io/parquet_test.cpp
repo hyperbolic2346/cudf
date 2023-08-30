@@ -1186,8 +1186,7 @@ TEST_F(ParquetWriterTest, Struct)
 
   auto expected = table_view({*struct_2});
 
-  auto filepath =
-    "/home/knobby/code/rapids/cudf/Struct.parquet";  // temp_env->get_temp_filepath("Struct.parquet");
+  auto filepath = temp_env->get_temp_filepath("Struct.parquet");
   cudf::io::parquet_writer_options args =
     cudf::io::parquet_writer_options::builder(cudf::io::sink_info{filepath}, expected);
   cudf::io::write_parquet(args);

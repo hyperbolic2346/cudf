@@ -313,6 +313,7 @@ void reader::impl::prepare_data(int64_t skip_rows,
                                 host_span<std::vector<size_type> const> row_group_indices)
 {
   if (_file_preprocessed) { return; }
+
   auto const [skip_rows_corrected, num_rows_corrected, row_groups_info] =
     _metadata->select_row_groups(row_group_indices, skip_rows, num_rows);
 
@@ -326,6 +327,7 @@ void reader::impl::prepare_data(int64_t skip_rows,
                    "Reading the whole file should yield only one chunk.");
     }
   }
+
   _file_preprocessed = true;
 }
 
