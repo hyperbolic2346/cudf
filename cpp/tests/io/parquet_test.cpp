@@ -5692,17 +5692,12 @@ TEST_F(ParquetReaderTest, RepeatedNoAnnotations)
     0x61, 0x38, 0x33, 0x39, 0x31, 0x36, 0x63, 0x36, 0x39, 0x62, 0x35, 0x65, 0x29, 0x00, 0x32, 0x01,
     0x00, 0x00, 0x50, 0x41, 0x52, 0x31};
 
-  printf("read, baby!\n");
   auto read_opts = cudf::io::parquet_reader_options::builder(
     cudf::io::source_info{reinterpret_cast<char const*>(repeated_bytes), sizeof(repeated_bytes)});
   auto result = cudf::io::read_parquet(read_opts);
 
-  printf("read, finished!\n");
-
   EXPECT_EQ(result.tbl->view().column(0).size(), 6);
   EXPECT_EQ(result.tbl->view().num_columns(), 2);
-
-  printf("compared!\n");
 
   column_wrapper<int32_t> col0{1, 2, 3, 4, 5, 6};
   column_wrapper<int64_t> child0{{5555555555l, 1111111111l, 1111111111l, 2222222222l, 3333333333l}};

@@ -64,10 +64,7 @@ void reader::impl::decode_page_data(size_t skip_rows, size_t num_rows)
   // chunked reader).
   auto const has_strings = std::any_of(chunks.begin(), chunks.end(), gpu::is_string_col);
 
-  printf("Has strings is %s\n", has_strings ? "true" : "false");
-
   std::vector<size_t> col_sizes(_input_columns.size(), 0L);
-  printf("total input columns %d\n", (int)_input_columns.size());
   if (has_strings) {
     gpu::ComputePageStringSizes(
       pages, chunks, skip_rows, num_rows, _file_itm_data.level_type_size, _stream);
@@ -91,8 +88,6 @@ void reader::impl::decode_page_data(size_t skip_rows, size_t num_rows)
   auto chunk_offsets     = std::vector<size_t>();
   auto chunk_nested_str_data =
     cudf::detail::hostdevice_vector<void*>(has_strings ? sum_max_depths : 0, _stream);
-
-  printf("updating chunks with pointers to col data\n");
 
   // Update chunks with pointers to column data.
   for (size_t c = 0, page_count = 0, chunk_off = 0; c < chunks.size(); c++) {
@@ -150,34 +145,10 @@ void reader::impl::decode_page_data(size_t skip_rows, size_t num_rows)
     //
     // we do this by only handing out the pointers to the first child we come across.
     //
-    std::function<void(inline_column_buffer const&, int)> print_col =
-      [&](inline_column_buffer const& col, int depth) -> void {
-      for (int i = 0; i < depth; ++i)
-        printf("  ");
-      printf("col %s - %d\n", col.name.c_str(), (int)col.type.id());
-      for (int j = 0; j < (int)col.children.size(); ++j) {
-        print_col(col.children[j], depth + 1);
-      }
-    };
-    for (int i = 0; i < (int)_output_buffers.size(); ++i) {
-      auto& col = _output_buffers[i];
-      printf("col %d:\n", i);
-      print_col(col, 0);
-    }
-    printf("%lu input column nesting:\n", input_col.nesting.size());
-    for (int i = 0; i < (int)input_col.nesting.size(); ++i) {
-      printf(" - nesting[%d] == %d\n", i, input_col.nesting[i]);
-    }
-
-    printf("handing out buffer pointers\n");
     auto* cols = &_output_buffers;
     for (size_t idx = 0; idx < max_depth; idx++) {
-      printf(" - checking input col nesting index %lu/%lu\n", idx, max_depth);
-      printf(
-        " - looking for (*cols)[%d], cols is %lu in size\n", input_col.nesting[idx], cols->size());
       auto& out_buf = (*cols)[input_col.nesting[idx]];
-      printf("data %p - valids %p\n", out_buf.data(), out_buf.null_mask());
-      cols = &out_buf.children;
+      cols          = &out_buf.children;
 
       int owning_schema = out_buf.user_data & PARQUET_COLUMN_BUFFER_SCHEMA_MASK;
       if (owning_schema == 0 || owning_schema == input_col.schema_idx) {
@@ -205,8 +176,6 @@ void reader::impl::decode_page_data(size_t skip_rows, size_t num_rows)
   chunk_nested_data.host_to_device_async(_stream);
   _stream.synchronize();
 
-  printf(" stream sync\n");
-
   auto stream1 = get_stream_pool().get_stream();
   gpu::DecodePageData(pages, chunks, num_rows, skip_rows, _file_itm_data.level_type_size, stream1);
   if (has_strings) {
@@ -217,8 +186,6 @@ void reader::impl::decode_page_data(size_t skip_rows, size_t num_rows)
     stream2.synchronize();
   }
   stream1.synchronize();
-
-  printf("page sync\n");
 
   pages.device_to_host_async(_stream);
   page_nesting.device_to_host_async(_stream);
@@ -265,8 +232,6 @@ void reader::impl::decode_page_data(size_t skip_rows, size_t num_rows)
     }
   }
 
-  printf("updating null counts\n");
-
   // update null counts in the final column buffers
   for (size_t idx = 0; idx < pages.size(); idx++) {
     gpu::PageInfo* pi = &pages[idx];
@@ -289,8 +254,6 @@ void reader::impl::decode_page_data(size_t skip_rows, size_t num_rows)
       out_buf.null_count() += pndi[l_idx].null_count;
     }
   }
-
-  printf("final sync\n");
 
   _stream.synchronize();
 }
@@ -342,22 +305,6 @@ reader::impl::impl(std::size_t chunk_read_limit,
       _output_buffers_template.emplace_back(inline_column_buffer::empty_like(buff));
     }
   }
-
-  std::function<void(inline_column_buffer const&, int)> print_col =
-    [&](inline_column_buffer const& col, int depth) -> void {
-    for (int i = 0; i < depth; ++i)
-      printf("  ");
-    printf("col %s - %d\n", col.name.c_str(), (int)col.type.id());
-    for (int j = 0; j < (int)col.children.size(); ++j) {
-      print_col(col.children[j], depth + 1);
-    }
-  };
-
-  printf("final produced columns:\n");
-  for (int i = 0; i < (int)_output_buffers.size(); ++i) {
-    auto& col = _output_buffers[i];
-    print_col(col, 0);
-  }
 }
 
 void reader::impl::prepare_data(int64_t skip_rows,
@@ -366,14 +313,11 @@ void reader::impl::prepare_data(int64_t skip_rows,
                                 host_span<std::vector<size_type> const> row_group_indices)
 {
   if (_file_preprocessed) { return; }
-  printf("prepare data\n");
   auto const [skip_rows_corrected, num_rows_corrected, row_groups_info] =
     _metadata->select_row_groups(row_group_indices, skip_rows, num_rows);
 
-  printf("loading and decompressing\n");
   if (num_rows_corrected > 0 && row_groups_info.size() != 0 && _input_columns.size() != 0) {
     load_and_decompress_data(row_groups_info, num_rows_corrected);
-    printf("preprocessing\n");
     preprocess_pages(
       skip_rows_corrected, num_rows_corrected, uses_custom_row_bounds, _chunk_read_limit);
 
@@ -382,14 +326,11 @@ void reader::impl::prepare_data(int64_t skip_rows,
                    "Reading the whole file should yield only one chunk.");
     }
   }
-  printf("prepared...\n");
   _file_preprocessed = true;
 }
 
 table_with_metadata reader::impl::read_chunk_internal(bool uses_custom_row_bounds)
 {
-  printf("read chunk internal\n");
-
   // If `_output_metadata` has been constructed, just copy it over.
   auto out_metadata = _output_metadata ? table_metadata{*_output_metadata} : table_metadata{};
 
@@ -406,12 +347,8 @@ table_with_metadata reader::impl::read_chunk_internal(bool uses_custom_row_bound
   // Allocate memory buffers for the output columns.
   allocate_columns(read_info.skip_rows, read_info.num_rows, uses_custom_row_bounds);
 
-  printf("decoding page data\n");
-
   // Parse data into the output buffers.
   decode_page_data(read_info.skip_rows, read_info.num_rows);
-
-  printf("decoded and now building columns\n");
 
   // Create the final output cudf columns.
   for (size_t i = 0; i < _output_buffers.size(); ++i) {

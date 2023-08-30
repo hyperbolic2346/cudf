@@ -79,9 +79,6 @@ std::unique_ptr<column> make_numeric_column(data_type type,
 {
   CUDF_FUNC_RANGE();
   CUDF_EXPECTS(is_numeric(type), "Invalid, non-numeric type.");
-  if (size < 0) {
-    printf("attempting to amke a column of type %d with size %d!\n", (int)type.id(), size);
-  }
   CUDF_EXPECTS(size >= 0, "Column size cannot be negative.");
 
   return std::make_unique<column>(

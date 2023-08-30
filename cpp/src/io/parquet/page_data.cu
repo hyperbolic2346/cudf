@@ -536,15 +536,6 @@ static __device__ void gpuUpdatePageSizes(page_state_s* s,
       __syncthreads();
       if (!t) {
         PageNestingInfo* pni = &s->page.nesting[s_idx];
-        printf(
-          "Adding to page %p - %d to batch size of %d on nesting index %d due to start %d and end "
-          "%d\n",
-          pni,
-          count,
-          pni->batch_size,
-          s_idx,
-          start_depth,
-          end_depth);
         pni->batch_size += count;
       }
     }
@@ -859,12 +850,6 @@ __global__ void __launch_bounds__(decode_block_size) gpuDecodePageData(
         int leaf_level_index = s->col.max_nesting_depth - 1;
 
         uint32_t dtype_len = s->dtype_len;
-
-        printf("col type is %d, %u rows\n", (int)s->col.data_type, s->col.num_rows);
-
-        for (int i = 0; i < s->col.max_nesting_depth; ++i) {
-          printf(" - nesting_info_base[%d] == %p\n", i, nesting_info_base[i].data_out);
-        }
 
         void* dst =
           nesting_info_base[leaf_level_index].data_out + static_cast<size_t>(dst_pos) * dtype_len;
