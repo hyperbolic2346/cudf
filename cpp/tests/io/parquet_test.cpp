@@ -5723,6 +5723,17 @@ TEST_F(ParquetReaderTest, RepeatedNoAnnotations)
   printf("vs:\n");
   cudf::test::print(result.tbl->view().column(1));
 
+  auto filepath = temp_env->get_temp_filepath("RoundTripStructListStruct.parquet");
+
+  cudf::io::parquet_writer_options out_opts =
+    cudf::io::parquet_writer_options::builder(cudf::io::sink_info{filepath}, expected);
+  cudf::io::write_parquet(out_opts);
+
+  auto expected_read_opts =
+    cudf::io::parquet_reader_options::builder(cudf::io::source_info{filepath});
+  auto expected_result = cudf::io::read_parquet(expected_read_opts);
+  cudf::test::print(expected_result.tbl->view().column(1));
+
   CUDF_TEST_EXPECT_TABLES_EQUAL(result.tbl->view(), expected);
 }
 

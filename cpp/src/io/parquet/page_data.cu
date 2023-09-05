@@ -481,6 +481,16 @@ static __device__ void gpuUpdatePageSizes(page_state_s* s,
     get_nesting_bounds<lvl_buf_size, level_t>(
       start_depth, end_depth, d, s, rep, def, value_count, value_count + batch_size, t);
 
+    // print out things
+    if (t < batch_size) {
+      printf("t(%d), rep: %d, def: %d, start: %d, end: %d\n",
+             t,
+             (int)rep[t],
+             (int)def[t],
+             start_depth,
+             end_depth);
+    }
+
     // is this thread within row bounds? in the non skip_rows/num_rows case this will always
     // be true.
     int in_row_bounds = 1;

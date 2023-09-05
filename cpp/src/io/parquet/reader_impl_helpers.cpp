@@ -195,6 +195,30 @@ metadata::metadata(datasource* source)
   CompactProtocolReader cp(buffer->data(), ender->footer_len);
   CUDF_EXPECTS(cp.read(this), "Cannot parse metadata");
   CUDF_EXPECTS(cp.InitSchema(this), "Cannot initialize schema");
+
+  std::function<int(int, std::string)> print_node = [&](int idx, std::string prefix) {
+    auto& e = schema[idx];
+    printf(
+      "%sschema element %d(%s) type %d, converted type %d, repetition_type %d, num_children %d, "
+      "max rep %d, max def %d\n",
+      prefix.c_str(),
+      idx,
+      e.name.c_str(),
+      (int)e.type,
+      (int)e.converted_type,
+      (int)e.repetition_type,
+      (int)e.num_children,
+      (int)e.max_repetition_level,
+      (int)e.max_definition_level);
+    idx++;
+    for (int i = 0; i < e.num_children; ++i) {
+      idx = print_node(idx, "  " + prefix);
+    }
+    return idx;
+  };
+
+  printf("schema:\n");
+  print_node(0, "");
 }
 
 std::vector<metadata> aggregate_reader_metadata::metadatas_from_sources(

@@ -372,8 +372,9 @@ int CompactProtocolReader::WalkSchema(
   FileMetaData* md, int idx, int parent_idx, int max_def_level, int max_rep_level)
 {
   if (idx >= 0 && (size_t)idx < md->schema.size()) {
-    SchemaElement* e = &md->schema[idx];
-    if (e->repetition_type == OPTIONAL) {
+    SchemaElement* e          = &md->schema[idx];
+    auto const is_list_struct = e->is_list_struct();
+    if (e->repetition_type == OPTIONAL || is_list_struct) {
       ++max_def_level;
     } else if (e->repetition_type == REPEATED) {
       ++max_def_level;
@@ -385,6 +386,7 @@ int CompactProtocolReader::WalkSchema(
 
     parent_idx = idx;
     ++idx;
+    if (e->is_list_struct()) { max_rep_level++; }
     if (e->num_children > 0) {
       for (int i = 0; i < e->num_children; i++) {
         e->children_idx.push_back(idx);

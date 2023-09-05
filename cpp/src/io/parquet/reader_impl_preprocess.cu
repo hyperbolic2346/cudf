@@ -109,24 +109,50 @@ void generate_depth_remappings(std::map<int, std::pair<std::vector<int>, std::ve
   // compute "X" from above
   for (int s_idx = schema.max_repetition_level; s_idx >= 0; s_idx--) {
     auto find_shallowest = [&](int r) {
-      int shallowest = -1;
-      int cur_depth  = max_depth - 1;
-      int schema_idx = src_col_schema;
+      int shallowest    = -1;
+      int cur_depth     = max_depth - 1;
+      int schema_idx    = src_col_schema;
+      auto print_status = [&r, &shallowest, &cur_depth, &schema_idx](SchemaElement& e) {
+        printf("%d: schema_idx:%d(%s), shallowest: %d, cur depth: %d\n",
+               r,
+               schema_idx,
+               e.name.c_str(),
+               shallowest,
+               cur_depth);
+      };
       while (schema_idx > 0) {
         auto cur_schema = md.get_schema(schema_idx);
+        print_status(cur_schema);
         if (cur_schema.max_repetition_level == r) {
           // if this is a repeated field, map it one level deeper
-          shallowest =
-            cur_schema.is_stub(md.get_schema(cur_schema.parent_idx)) ? cur_depth + 1 : cur_depth;
+          if (cur_schema.is_list_struct()) {
+            printf(
+              "%d: matched rep, setting shallowest to list struct depth: %d\n", r, cur_depth - 1);
+          } else {
+            printf("%d: matched rep, setting shallowest to cur depth: %d\n",
+                   r,
+                   cur_schema.is_stub(md.get_schema(cur_schema.parent_idx)) ? cur_depth + 1
+                   : cur_schema.is_list_struct()                            ? cur_depth - 1
+                                                                            : cur_depth);
+          }
+          shallowest = cur_schema.is_stub(md.get_schema(cur_schema.parent_idx)) ? cur_depth + 1
+                       : cur_schema.is_list_struct()                            ? cur_depth - 1
+                                                                                : cur_depth;
         }
         // if it's one-level encoding list
-        else if (cur_schema.is_one_level_list(md.get_schema(cur_schema.parent_idx)) ||
-                 cur_schema.is_list_struct()) {
+        else if (cur_schema.is_one_level_list(md.get_schema(cur_schema.parent_idx))) {
+          printf(
+            "%d: schema %s shallowest going to %d - 1\n", r, cur_schema.name.c_str(), cur_depth);
           shallowest = cur_depth - 1;
         }
-        if (!cur_schema.is_stub(md.get_schema(cur_schema.parent_idx))) { cur_depth--; }
+        if (!cur_schema.is_stub(md.get_schema(cur_schema.parent_idx))) {
+          printf("%d: not stub, reducing depth to %d\n", r, cur_depth - 1);
+          cur_depth--;
+        }
+        printf("%d: schema %d moving to parent %d\n", r, schema_idx, cur_schema.parent_idx);
         schema_idx = cur_schema.parent_idx;
       }
+      printf("Search for %d resulted in shallowest of %d\n", r, shallowest);
       return shallowest;
     };
     rep_depth_remap[s_idx] = find_shallowest(s_idx);

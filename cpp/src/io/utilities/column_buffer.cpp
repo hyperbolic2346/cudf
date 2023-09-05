@@ -24,6 +24,8 @@
 #include <cudf/strings/strings_column_view.hpp>
 #include <cudf/types.hpp>
 
+#include "time_utils.cuh"
+
 #include <rmm/mr/device/per_device_resource.hpp>
 
 namespace cudf::io::detail {
@@ -193,6 +195,7 @@ std::unique_ptr<column> make_column(column_buffer_base<string_policy>& buffer,
       }
 
     case type_id::LIST: {
+      //      print_stuff(buffer, stream);
       // make offsets column
       auto offsets = std::make_unique<column>(
         data_type{type_id::INT32}, buffer.size, std::move(buffer._data), rmm::device_buffer{}, 0);
